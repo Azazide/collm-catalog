@@ -1,0 +1,24 @@
+[package]
+name = "collm-catalog"
+version = "0.1.0"
+edition = "2024"
+description = "Builds catalog.json: the GGUF chat models Collm offers for download, read from Hugging Face."
+license = "AGPL-3.0-only"
+publish = false
+
+[lib]
+name = "collm_catalog"
+path = "src/lib.rs"
+
+[[bin]]
+name = "collm-catalog"
+path = "src/main.rs"
+
+[dependencies]
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+toml = "1.2.1"
+ureq = "3"
+
+[profile.release]
+opt-level = 2

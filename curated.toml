@@ -1,0 +1,29 @@
+# What the catalog offers. Everything here is a choice; what makes a repository a chat model at all
+# is in src/select.rs. An unknown key is an error.
+
+# The catalog holds at most this many models, taken by downloads over the last 30 days.
+max_models = 300
+
+# Repositories looked into in one run, at most. Each one that is new or changed costs a few
+# requests; Hugging Face allows an anonymous caller 500 per 5 minutes and the run waits as needed.
+max_candidates = 900
+
+# The list is read 1000 repositories at a time, at most this many pages.
+max_list_pages = 5
+
+# Listed first whatever their downloads, as "owner/name".
+pinned = []
+
+# Owners whose repositories are never listed.
+exclude_developers = []
+
+# Repositories whose name holds one of these, in any case, are never listed.
+exclude_name_contains = ["embed", "rerank", "lora", "whisper", "-vae"]
+
+# GGUF architectures that are not language models, or are only the draft half of one (speculative
+# decoding). "clip" is not listed on purpose: Hugging Face reports it for a repository whose first
+# file is a vision projector, and that says nothing of the model (the program ignores it).
+exclude_architectures = [
+  "bert", "nomic-bert", "t5encoder", "whisper", "wavtokenizer-dec",
+  "dflash", "eagle3", "dspark",
+]
