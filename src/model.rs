@@ -66,9 +66,12 @@ pub struct Model {
     /// The model's README at the same commit; left out when the repository has none.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub readme: String,
-    /// Every single-file weights file, smallest first. Draft files for speculative decoding
-    /// (`mtp-…`, `MTP/…`) are listed here too; the app tells them apart by name.
+    /// Every weights file that runs on its own and is whole, smallest first.
     pub quants: Vec<File>,
+    /// The drafts for speculative decoding (`mtp`, `dspark`, `dflash`, `eagle3`) that pair with a
+    /// model above: files no one runs alone, so they are not among the `quants`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub drafts: Vec<File>,
     /// Vision projectors (`mmproj-…`).
     pub mmproj_models: Vec<File>,
 }

@@ -3,13 +3,81 @@
 //!
 //! Only whole files are offered: a weights file cut into `-00001-of-00003` parts is skipped, as the
 //! app downloads one file per model. Every address points at the commit the tree was read at.
+//!
+//! Files are told apart as the models, the vision projectors (`mmproj-…`) and the drafts for
+//! speculative decoding, which pair with a model and are no model themselves.
 
 use crate::hf::{TreeEntry, encode_path};
 use crate::model::File;
+use std::collections::HashSet;
 
 pub struct Files {
+    /// The weights files that run on their own, smallest first.
     pub quants: Vec<File>,
+    /// The drafts for speculative decoding (`mtp`, `dspark`, `dflash`, `eagle3`), smallest first.
+    pub drafts: Vec<File>,
     pub mmproj: Vec<File>,
+}
+
+/// The kinds of draft llama.cpp takes beside a model, as upstream names them.
+const DRAFT_KINDS: [&str; 4] = ["mtp", "dspark", "dflash", "eagle3"];
+
+/// A file this many times smaller than the repository's largest is a draft whatever else its name
+/// says: a draft head is a sliver of a model (those measured were 0.001 to 0.04 of the largest file
+/// beside the smallest real quant at 0.2).
+const DRAFT_SIZE_RATIO: u64 = 10;
+
+/// The words of a file name, lower case: `Qwen3-Coder-MTP-Q4_K_M` is qwen3, coder, mtp, q4, k, m.
+fn words(name: &str) -> Vec<String> {
+    name.to_lowercase()
+        .split(['-', '_', '.'])
+        .filter(|w| !w.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+/// A name by its words only, so `Model-Q8_0` and `model.q8-0` are one name.
+fn normal(name: &str) -> String {
+    words(name).join("-")
+}
+
+/// Whether a file is a draft, from its path without `.gguf`, its size, the largest file of the
+/// repository and the normal names of all its whole files.
+///
+/// A draft is a file in a folder of the kind's name (`MTP/…`), or one that begins with it
+/// (`mtp-…`, the way upstream names them). A name that holds the kind anywhere else, as
+/// `Model-MTP-Q4_K_M`, is a model made with it when its repository has no file of that name without
+/// the kind and no sliver of a size: the real ones are named so in their repository. It is a draft
+/// when another file is its name without the kind (`Model-Q8_0` beside `Model-Q8_0-MTP`) or it is a
+/// sliver of the largest file.
+fn is_draft(path: &str, size: u64, largest: u64, names: &HashSet<String>) -> bool {
+    let (folder, base) = match path.rsplit_once('/') {
+        Some((folder, base)) => (Some(folder), base),
+        None => (None, path),
+    };
+    let parts = words(base);
+    DRAFT_KINDS.iter().any(|kind| {
+        if folder.is_some_and(|f| {
+            f.split('/')
+                .next()
+                .is_some_and(|d| d.eq_ignore_ascii_case(kind))
+        }) {
+            return true;
+        }
+        let Some(at) = parts.iter().position(|w| w == kind) else {
+            return false;
+        };
+        if at == 0 {
+            return true;
+        }
+        let without: Vec<&str> = parts
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| *i != at)
+            .map(|(_, w)| w.as_str())
+            .collect();
+        size.saturating_mul(DRAFT_SIZE_RATIO) < largest || names.contains(&without.join("-"))
+    })
 }
 
 /// `name-00001-of-00003`, with or without `.gguf`: one part of a weights file that was cut up.
@@ -30,7 +98,7 @@ fn is_sha256(text: &str) -> bool {
 }
 
 pub fn classify(repo: &str, rev: &str, tree: &[TreeEntry]) -> Files {
-    let mut quants = Vec::new();
+    let mut whole = Vec::new();
     let mut mmproj = Vec::new();
     for entry in tree {
         if entry.kind != "file" || !entry.path.to_ascii_lowercase().ends_with(".gguf") {
@@ -67,16 +135,32 @@ pub fn classify(repo: &str, rev: &str, tree: &[TreeEntry]) -> Files {
         if name.to_ascii_lowercase().contains("mmproj") {
             mmproj.push(file);
         } else {
-            quants.push(file);
+            whole.push(file);
         }
     }
-    quants.sort_by(|a, b| {
+
+    let largest = whole.iter().map(|f| f.size).max().unwrap_or(0);
+    let names: HashSet<String> = whole
+        .iter()
+        .map(|f| normal(f.model_id.rsplit('/').next().unwrap_or(&f.model_id)))
+        .collect();
+    let (mut drafts, mut quants): (Vec<File>, Vec<File>) = whole
+        .into_iter()
+        .partition(|f| is_draft(&f.model_id, f.size, largest, &names));
+
+    let by_size = |a: &File, b: &File| {
         a.size
             .cmp(&b.size)
             .then_with(|| a.model_id.cmp(&b.model_id))
-    });
+    };
+    quants.sort_by(by_size);
+    drafts.sort_by(by_size);
     mmproj.sort_by(|a, b| a.model_id.cmp(&b.model_id));
-    Files { quants, mmproj }
+    Files {
+        quants,
+        drafts,
+        mmproj,
+    }
 }
 
 #[cfg(test)]
@@ -111,21 +195,25 @@ mod tests {
         let files = classify("unsloth/gemma-4-12b-it-GGUF", "fc034cf", &fixture("gemma"));
         assert_eq!(
             files.quants.len(),
-            25,
-            "28 gguf files, 3 of them projectors"
+            21,
+            "28 gguf files: 3 projectors, 4 drafts"
         );
         assert_eq!(files.mmproj.len(), 3);
+        let drafts: Vec<_> = files.drafts.iter().map(|d| d.model_id.as_str()).collect();
+        assert_eq!(drafts.len(), 4);
+        for draft in [
+            "MTP/mtp-gemma-4-12b-it-BF16",
+            "MTP/mtp-gemma-4-12b-it-F16",
+            "MTP/mtp-gemma-4-12b-it-Q8_0",
+            "mtp-gemma-4-12b-it",
+        ] {
+            assert!(drafts.contains(&draft), "{draft} is a draft");
+        }
         assert!(
             files
                 .quants
                 .iter()
-                .any(|q| q.model_id == "MTP/mtp-gemma-4-12b-it-Q8_0")
-        );
-        assert!(
-            files
-                .quants
-                .iter()
-                .any(|q| q.model_id == "mtp-gemma-4-12b-it")
+                .all(|q| !q.model_id.to_lowercase().contains("mtp"))
         );
         assert!(
             files
@@ -137,6 +225,7 @@ mod tests {
             files.quants.windows(2).all(|w| w[0].size <= w[1].size),
             "smallest first"
         );
+        assert!(files.drafts.windows(2).all(|w| w[0].size <= w[1].size));
     }
 
     #[test]
@@ -252,5 +341,110 @@ mod tests {
             "https://huggingface.co/a/b/resolve/r/dir%20one/m%2Bx.gguf"
         );
         assert_eq!(files.quants[0].model_id, "dir one/m+x");
+    }
+
+    const GB: u64 = 1_000_000_000;
+
+    fn tree_of(files: &[(&str, u64)]) -> Vec<TreeEntry> {
+        files
+            .iter()
+            .map(|(path, size)| file(&format!("{path}.gguf"), *size, Some(OID)))
+            .collect()
+    }
+
+    fn split(files: &[(&str, u64)]) -> (Vec<String>, Vec<String>) {
+        let found = classify("o/r", "rev", &tree_of(files));
+        let ids = |v: &[File]| v.iter().map(|f| f.model_id.clone()).collect::<Vec<_>>();
+        let (mut quants, mut drafts) = (ids(&found.quants), ids(&found.drafts));
+        quants.sort();
+        drafts.sort();
+        (quants, drafts)
+    }
+
+    #[test]
+    fn the_words_of_a_name_are_cut_at_dashes_underscores_and_dots() {
+        assert_eq!(
+            words("Qwen3-Coder-MTP-Q4_K_M"),
+            ["qwen3", "coder", "mtp", "q4", "k", "m"]
+        );
+        assert_eq!(normal("Model.Q8_0"), normal("model-q8-0"));
+    }
+
+    #[test]
+    fn a_draft_is_in_a_folder_of_its_kind_or_begins_with_it() {
+        let (quants, drafts) = split(&[
+            ("Model-Q8_0", 8 * GB),
+            ("MTP/Model-BF16", GB),
+            ("mtp-Model", GB),
+            ("DSpark/anything", GB),
+            ("eagle3-Model-Q4_0", GB),
+            ("dflash_Model", GB),
+        ]);
+        assert_eq!(quants, ["Model-Q8_0"]);
+        assert_eq!(drafts.len(), 5);
+    }
+
+    #[test]
+    fn a_name_that_holds_the_kind_in_the_middle_is_a_model_when_nothing_pairs_with_it() {
+        // Models made with the head kept in them, named so in every file of their repository.
+        let (quants, drafts) = split(&[
+            ("Tiel-Coder-35B-MTP-UD-Q2_K_XL", 12 * GB),
+            ("Tiel-Coder-35B-MTP-Q4_K_M", 20 * GB),
+            ("Tiel-Coder-35B-MTP-BF16", 60 * GB),
+        ]);
+        assert_eq!(quants.len(), 3, "{quants:?}");
+        assert!(drafts.is_empty());
+        // One whole file only, named with the kind at its end.
+        let (quants, drafts) = split(&[("Qwen-iMatrix-NVFP4-MTP", 15 * GB)]);
+        assert_eq!((quants.len(), drafts.len()), (1, 0));
+    }
+
+    #[test]
+    fn a_file_that_is_another_files_name_plus_the_kind_is_its_draft_across_separators() {
+        let (quants, drafts) = split(&[
+            ("Model-Q8_0", 8 * GB),
+            ("Model-Q8_0-MTP", 3 * GB),
+            ("model.q4_0", 4 * GB),
+            ("Model-MTP-Q4_0", 2 * GB),
+        ]);
+        assert_eq!(quants, ["Model-Q8_0", "model.q4_0"]);
+        assert_eq!(drafts, ["Model-MTP-Q4_0", "Model-Q8_0-MTP"]);
+    }
+
+    #[test]
+    fn a_sliver_of_the_largest_file_with_the_kind_in_its_name_is_a_draft_though_nothing_pairs() {
+        let (quants, drafts) = split(&[
+            ("Big-Q4_K_M", 20 * GB),
+            ("Big-Q8_0", 36 * GB),
+            ("Name-DFlash-Q4_K", GB / 5),
+        ]);
+        assert_eq!(quants, ["Big-Q4_K_M", "Big-Q8_0"]);
+        assert_eq!(drafts, ["Name-DFlash-Q4_K"]);
+        // The same name at a model's size, and as the largest, is a model.
+        let (quants, drafts) = split(&[("Name-DFlash-Q4_K", 20 * GB), ("Other-Q8_0", 36 * GB)]);
+        assert_eq!((quants.len(), drafts.len()), (2, 0));
+    }
+
+    #[test]
+    fn the_kind_must_be_a_whole_word_of_the_name() {
+        let (quants, drafts) = split(&[
+            ("Model-noMTP-Q4", 4 * GB),
+            ("Model-mtpx-Q4", 4 * GB),
+            ("Model-undflashed-Q4", 4 * GB),
+            ("MTPlus/Model-Q4", 4 * GB),
+        ]);
+        assert_eq!(quants.len(), 4, "{quants:?}");
+        assert!(drafts.is_empty());
+    }
+
+    #[test]
+    fn a_repository_whose_only_whole_files_are_drafts_has_no_model_in_it() {
+        let found = classify(
+            "o/r",
+            "rev",
+            &tree_of(&[("mtp-q2_0", GB), ("dspark-Model-Q8_0", GB)]),
+        );
+        assert!(found.quants.is_empty());
+        assert_eq!(found.drafts.len(), 2);
     }
 }

@@ -210,7 +210,12 @@ fn a_model_carries_what_the_app_shows_and_checks() {
         ["agent", "tools", "vision"],
         "its README speaks of agentic workflows three times; the template takes tools; projectors lie beside the weights"
     );
-    assert_eq!(gemma.quants.len(), 25);
+    assert_eq!(gemma.quants.len(), 21);
+    assert_eq!(
+        gemma.drafts.len(),
+        4,
+        "the drafts are kept apart from the models"
+    );
     assert_eq!(gemma.mmproj_models.len(), 3);
     assert!(
         gemma
@@ -694,4 +699,66 @@ fn two_owners_with_the_same_repository_name_are_two_models_with_two_names() {
     assert_eq!(listed, ["alpha/Same-Name-GGUF", "beta/Same-Name-GGUF"]);
     assert_eq!(catalog.models[0].developer, "alpha");
     assert_eq!(catalog.models[1].developer, "beta");
+}
+
+fn tree_json(files: &[(&str, u64)]) -> Vec<TreeEntry> {
+    let entries: Vec<String> = files
+        .iter()
+        .map(|(path, size)| {
+            format!(
+                r#"{{"type":"file","path":"{path}","size":{size},"lfs":{{"oid":"00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff","size":{size}}}}}"#
+            )
+        })
+        .collect();
+    serde_json::from_str(&format!("[{}]", entries.join(","))).unwrap()
+}
+
+#[test]
+fn a_repository_with_only_drafts_is_left_out_and_one_named_with_the_kind_throughout_is_listed() {
+    let mut fake = synthetic(vec![
+        bare("a/only-drafts", &[], "llama", Some("{{ messages }}")),
+        bare("b/mtp-named-model", &[], "llama", Some("{{ messages }}")),
+        bare("c/model-and-draft", &[], "llama", Some("{{ messages }}")),
+    ]);
+    fake.trees.insert(
+        "a/only-drafts".into(),
+        tree_json(&[
+            ("mtp-Model-Q8_0.gguf", 900_000_000),
+            ("dspark-Model-Q8_0.gguf", 800_000_000),
+        ]),
+    );
+    fake.trees.insert(
+        "b/mtp-named-model".into(),
+        tree_json(&[
+            ("Model-MTP-Q2_K.gguf", 5_000_000_000),
+            ("Model-MTP-Q4_K_M.gguf", 9_000_000_000),
+        ]),
+    );
+    fake.trees.insert(
+        "c/model-and-draft".into(),
+        tree_json(&[
+            ("Model-Q8_0.gguf", 8_000_000_000),
+            ("MTP/mtp-Model-Q8_0.gguf", 600_000_000),
+        ]),
+    );
+
+    let (catalog, stats, _) = run(&fake, &Curated::default(), &Catalog::empty());
+
+    assert_eq!(names(&catalog), ["b/mtp-named-model", "c/model-and-draft"]);
+    assert_eq!(stats.rejected.get(&Reason::OnlyDrafts), Some(&1));
+    let named = find(&catalog, "b/mtp-named-model");
+    assert_eq!(
+        named.quants.len(),
+        2,
+        "a model made with the head is a model"
+    );
+    assert!(named.drafts.is_empty());
+    let paired = find(&catalog, "c/model-and-draft");
+    assert_eq!(paired.quants.len(), 1);
+    assert_eq!(paired.drafts.len(), 1);
+    assert_eq!(paired.drafts[0].model_id, "MTP/mtp-Model-Q8_0");
+    assert!(
+        !render(&catalog).contains("\"drafts\":[]"),
+        "no list is written for a model with no draft"
+    );
 }

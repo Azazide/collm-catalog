@@ -222,7 +222,12 @@ fn process(
     let tree = hf.tree(&detail.id, &rev)?;
     let found = files::classify(&detail.id, &rev, &tree);
     if found.quants.is_empty() {
-        return Ok(Outcome::Rejected(Reason::NoWholeFile));
+        let reason = if found.drafts.is_empty() {
+            Reason::NoWholeFile
+        } else {
+            Reason::OnlyDrafts
+        };
+        return Ok(Outcome::Rejected(reason));
     }
     let readme = hf.readme(&detail.id, &rev)?;
     let note = describe::base_model_note(&detail.tags);
@@ -265,6 +270,7 @@ fn process(
                 })
                 .unwrap_or_default(),
             quants: found.quants,
+            drafts: found.drafts,
             mmproj_models: found.mmproj,
         },
         note,

@@ -22,8 +22,9 @@ repository is listed when
   Face reads that metadata from the repository's first file alphabetically, which is often a vision
   projector (`mmproj-…`, architecture `clip`); then the metadata says nothing of the model and only a
   chat label such as `text-generation` or `image-text-to-text` vouches for it;
-- at least one weights file is whole. A file cut into `-00001-of-00003` parts is skipped, and a
-  repository that has only those is left out.
+- at least one weights file is whole and runs on its own. A file cut into `-00001-of-00003` parts is
+  skipped, and a repository that has only those is left out; so is one whose only whole files are
+  drafts (below).
 
 `curated.toml` holds the choices a person makes: the size limit, repositories that are always listed,
 and owners, names and architectures that never are. An unknown key in it is an error.
@@ -50,7 +51,8 @@ when a field is renamed or changes meaning; a reader that does not know it shoul
 | `architecture`, `context_length` | from the GGUF header; left out when Hugging Face read a projector's instead |
 | `capabilities` | what the model can do, sorted: `vision`, `tools`, `code`, `agent` (see below) |
 | `readme` | the README at `sha`, left out when there is none |
-| `quants` | every whole weights file, smallest first: `{model_id, path, size, sha256}` |
+| `quants` | every whole weights file that runs on its own, smallest first: `{model_id, path, size, sha256}` |
+| `drafts` | the drafts for speculative decoding (`mtp`, `dspark`, `dflash`, `eagle3`) that pair with a model, the same shape; left out when there are none (see below) |
 | `mmproj_models` | vision projectors, the same shape |
 
 ## Capabilities
@@ -69,8 +71,16 @@ Most models take tools, so `agent` is the narrower claim: the author says it is 
 and coding" is `agent` and `code` together.
 
 `size` is in bytes. `sha256` is the file's SHA-256 as Hugging Face's LFS states it; it is left out for a
-file that is not in LFS. `model_id` is the path in the repository without `.gguf`. Draft files for
-speculative decoding (`mtp-…`, `MTP/…`) are among `quants`; a reader tells them apart by name.
+file that is not in LFS. `model_id` is the path in the repository without `.gguf`.
+
+## Drafts
+
+A draft is a small file for speculative decoding that pairs with a model and runs with no model of its
+own. It is told from a model by its name and its repository: a file in a folder of the kind's name
+(`MTP/…`) or beginning with it (`mtp-…`), with `mtp`, `dspark`, `dflash` or `eagle3` as a whole word;
+or a file with the word elsewhere in its name when the repository has another file of that name without
+it (`Model-Q8_0` beside `Model-Q8_0-MTP`) or when it is under a tenth of the largest file. A model made
+with the head kept in it, named `Model-MTP-Q4_K_M` in every file of its repository, is a model.
 
 ## Running it
 

@@ -85,6 +85,7 @@ pub enum Reason {
     NoCommit,
     NoChatTemplate,
     NoWholeFile,
+    OnlyDrafts,
 }
 
 impl Reason {
@@ -104,6 +105,7 @@ impl Reason {
                 "nothing shows it is a chat model (no chat template, no chat label)"
             }
             Reason::NoWholeFile => "no weights file is whole (all are cut into parts)",
+            Reason::OnlyDrafts => "the only whole files are drafts for speculative decoding",
         }
     }
 }
