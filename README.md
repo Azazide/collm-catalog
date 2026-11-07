@@ -76,11 +76,11 @@ file that is not in LFS. `model_id` is the path in the repository without `.gguf
 ## Drafts
 
 A draft is a small file for speculative decoding that pairs with a model and runs with no model of its
-own. It is told from a model by its name and its repository: a file in a folder of the kind's name
-(`MTP/…`) or beginning with it (`mtp-…`), with `mtp`, `dspark`, `dflash` or `eagle3` as a whole word;
-or a file with the word elsewhere in its name when the repository has another file of that name without
-it (`Model-Q8_0` beside `Model-Q8_0-MTP`) or when it is under a tenth of the largest file. A model made
-with the head kept in it, named `Model-MTP-Q4_K_M` in every file of its repository, is a model.
+own. It is told from a model by its name and its size: a file in a folder of the kind's name (`MTP/…`) or
+beginning with it (`mtp-…`), with `mtp`, `dspark`, `dflash` or `eagle3` as a whole word; or a file with the
+word elsewhere in its name that is under a tenth of the file it is named after (`Model-Q8_0-MTP` beside
+`Model-Q8_0`), or of the largest file when no file is. Most files that carry the word elsewhere are models
+made with the head kept in them: they weigh what the same model weighs, and they are models.
 
 ## Running it
 
