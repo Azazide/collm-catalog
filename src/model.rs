@@ -35,7 +35,8 @@ impl Catalog {
 /// One Hugging Face repository that holds GGUF chat models.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Model {
-    /// The repository name without its owner: `gemma-4-12b-it-GGUF`.
+    /// The repository, `owner/name`: `unsloth/gemma-4-12b-it-GGUF`. Two owners may name a repository the
+    /// same, so the name alone does not tell models apart.
     pub model_name: String,
     /// The repository owner: `unsloth`.
     pub developer: String,
@@ -74,7 +75,7 @@ pub struct Model {
 
 impl Model {
     pub fn repo_id(&self) -> String {
-        format!("{}/{}", self.developer, self.model_name)
+        self.model_name.clone()
     }
 }
 

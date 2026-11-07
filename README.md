@@ -42,7 +42,7 @@ when a field is renamed or changes meaning; a reader that does not know it shoul
 
 | field | |
 |---|---|
-| `model_name`, `developer` | repository name and owner |
+| `model_name`, `developer` | the repository as `owner/name`, which two owners cannot share, and its owner |
 | `sha` | the commit every address below points at; a later push to the repository cannot make a download fail its hash |
 | `description` | the first paragraph of the README that reads as a statement about a model, not a heading, list, table, bar of links, slogan or a blurb that opens the README of three or more repositories; failing that, which model it was made from; left out if neither |
 | `downloads`, `likes` | as Hugging Face counts them (downloads over 30 days) |

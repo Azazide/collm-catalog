@@ -199,7 +199,7 @@ fn a_model_carries_what_the_app_shows_and_checks() {
     let gemma = find(&catalog, GEMMA);
 
     assert_eq!(gemma.developer, "unsloth");
-    assert_eq!(gemma.model_name, "gemma-4-12b-it-GGUF");
+    assert_eq!(gemma.model_name, "unsloth/gemma-4-12b-it-GGUF");
     assert_eq!(gemma.sha, "fc034cfff751157913579611efad8462ac1be606");
     assert_eq!(gemma.architecture, "gemma4");
     assert_eq!(gemma.context_length, Some(262_144));
@@ -677,4 +677,21 @@ fn a_model_kept_from_the_last_run_is_dropped_when_its_architecture_is_excluded_s
             .unwrap_or(0)
             >= 1
     );
+}
+
+#[test]
+fn two_owners_with_the_same_repository_name_are_two_models_with_two_names() {
+    let fake = synthetic(vec![
+        bare("alpha/Same-Name-GGUF", &[], "llama", Some("{{ messages }}")),
+        bare("beta/Same-Name-GGUF", &[], "llama", Some("{{ messages }}")),
+    ]);
+    let (catalog, _, _) = run(&fake, &Curated::default(), &Catalog::empty());
+    let listed: Vec<_> = catalog
+        .models
+        .iter()
+        .map(|m| m.model_name.as_str())
+        .collect();
+    assert_eq!(listed, ["alpha/Same-Name-GGUF", "beta/Same-Name-GGUF"]);
+    assert_eq!(catalog.models[0].developer, "alpha");
+    assert_eq!(catalog.models[1].developer, "beta");
 }

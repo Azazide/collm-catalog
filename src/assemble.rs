@@ -148,7 +148,7 @@ pub fn build(
     }
 
     drop_shared_blurbs(&mut models, &notes);
-    models.sort_by_key(|m| (m.developer.to_lowercase(), m.model_name.to_lowercase()));
+    models.sort_by_key(|m| m.model_name.to_lowercase());
     Ok((
         Catalog {
             format: FORMAT,
@@ -215,7 +215,7 @@ fn process(
     // Unknown, not false, when the metadata was a projector's.
     let tools = (!projector).then(|| template.contains("tools"));
     let rev = detail.sha.clone().unwrap_or_else(|| listed_sha.to_string());
-    let Some((developer, name)) = select::split_id(&detail.id) else {
+    let Some((developer, _)) = select::split_id(&detail.id) else {
         return Ok(Outcome::Rejected(Reason::ExcludedName));
     };
 
@@ -237,7 +237,7 @@ fn process(
     .unwrap_or_default();
     Ok(Outcome::Fetched {
         model: Model {
-            model_name: name.to_string(),
+            model_name: detail.id.clone(),
             developer: developer.to_string(),
             sha: rev.clone(),
             description,
