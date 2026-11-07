@@ -27,6 +27,17 @@ const DRAFT_KINDS: [&str; 4] = ["mtp", "dspark", "dflash", "eagle3"];
 /// beside the smallest real quant at 0.2).
 const DRAFT_SIZE_RATIO: u64 = 10;
 
+/// A file this small is no model: the smallest chat model of the catalog is 149 MB, and what is
+/// smaller (a vocabulary, the data of a quantization, an adapter, a part of a speech model) is not
+/// something to run.
+const MIN_MODEL_BYTES: u64 = 50_000_000;
+
+/// Words that name what a repository keeps beside its models: importance data, adapters, vocabularies,
+/// tokenizers, the parts of a speech model. A file with one of them in its path is no model when it is
+/// a sliver of the largest file (measured: 0.001 to 0.05 of it, against 0.1 and over for the models
+/// that merely carry `imatrix` in their name).
+const NOT_WEIGHTS_WORDS: [&str; 6] = ["imatrix", "lora", "vocab", "tokenizer", "tts", "token2wav"];
+
 /// The words of a file name, lower case: `Qwen3-Coder-MTP-Q4_K_M` is qwen3, coder, mtp, q4, k, m.
 fn words(name: &str) -> Vec<String> {
     name.to_lowercase()
@@ -34,6 +45,20 @@ fn words(name: &str) -> Vec<String> {
         .filter(|w| !w.is_empty())
         .map(str::to_string)
         .collect()
+}
+
+/// Whether a file of a repository is something that is not weights to run: see [`MIN_MODEL_BYTES`]
+/// and [`NOT_WEIGHTS_WORDS`].
+fn is_not_a_model(path: &str, size: u64, largest: u64) -> bool {
+    if size < MIN_MODEL_BYTES {
+        return true;
+    }
+    let sliver = size.saturating_mul(DRAFT_SIZE_RATIO) < largest;
+    sliver
+        && path
+            .to_lowercase()
+            .split(['-', '_', '.', '/'])
+            .any(|word| NOT_WEIGHTS_WORDS.contains(&word))
 }
 
 /// A name by its words only, so `Model-Q8_0` and `model.q8-0` are one name.
@@ -141,6 +166,8 @@ pub fn classify(repo: &str, rev: &str, tree: &[TreeEntry]) -> Files {
         }
     }
 
+    let overall = whole.iter().map(|f| f.size).max().unwrap_or(0);
+    whole.retain(|f| !is_not_a_model(&f.model_id, f.size, overall));
     let largest = whole.iter().map(|f| f.size).max().unwrap_or(0);
     let sizes: HashMap<String, u64> = whole
         .iter()
@@ -317,23 +344,23 @@ mod tests {
             },
             file("README.md", 10, None),
             file("empty.gguf", 0, None),
-            file("Weights.GGUF", 5, None),
-            file("plain-Q4.gguf", 100, Some(OID)),
+            file("Weights.GGUF", 5 * GB, None),
+            file("plain-Q4.gguf", GB, Some(OID)),
         ];
         let files = classify("a/b", "r", &tree);
         let ids: Vec<_> = files.quants.iter().map(|q| q.model_id.as_str()).collect();
         assert_eq!(
             ids,
-            ["Weights", "plain-Q4"],
-            "the extension is read in any case"
+            ["plain-Q4", "Weights"],
+            "the extension is read in any case, smallest first"
         );
     }
 
     #[test]
     fn a_hash_that_is_not_sha256_is_left_out_and_one_in_capitals_is_lowered() {
         let tree = vec![
-            file("a.gguf", 10, Some("not-a-hash")),
-            file("b.gguf", 20, Some(&OID.to_ascii_uppercase())),
+            file("a.gguf", GB, Some("not-a-hash")),
+            file("b.gguf", 2 * GB, Some(&OID.to_ascii_uppercase())),
         ];
         let files = classify("a/b", "r", &tree);
         assert_eq!(files.quants[0].sha256, None);
@@ -342,7 +369,7 @@ mod tests {
 
     #[test]
     fn an_awkward_file_name_is_encoded_in_the_address() {
-        let files = classify("a/b", "r", &[file("dir one/m+x.gguf", 7, None)]);
+        let files = classify("a/b", "r", &[file("dir one/m+x.gguf", GB, None)]);
         assert_eq!(
             files.quants[0].path,
             "https://huggingface.co/a/b/resolve/r/dir%20one/m%2Bx.gguf"
@@ -470,5 +497,61 @@ mod tests {
         );
         assert!(found.quants.is_empty());
         assert_eq!(found.drafts.len(), 2);
+    }
+
+    const MB: u64 = 1_000_000;
+
+    #[test]
+    fn a_file_under_fifty_megabytes_is_no_model_even_when_it_is_all_there_is() {
+        let (quants, drafts) = split(&[("Vocab-only", 9 * MB)]);
+        assert!(quants.is_empty() && drafts.is_empty());
+        let (quants, _) = split(&[
+            ("Tiny-Q4", 49_999_999),
+            ("Edge-Q4", 50_000_000),
+            ("Real-Q4", 4 * GB),
+        ]);
+        assert_eq!(
+            quants,
+            ["Edge-Q4", "Real-Q4"],
+            "50 MB is the least a model weighs"
+        );
+    }
+
+    #[test]
+    fn importance_data_adapters_vocabularies_and_speech_parts_are_no_models_when_they_are_slivers()
+    {
+        let (quants, drafts) = split(&[
+            ("Model-Q4_K_M", 20 * GB),
+            ("Model-BF16", 40 * GB),
+            ("Model-imatrix", 192 * MB),
+            ("imatrix/Ling.imatrix", 488 * MB),
+            ("lora/Model-LoRA", 106 * MB),
+            ("tokenizer-Audio-F16", 143 * MB),
+            ("token2wav-gguf/hifigan2", 83 * MB),
+            ("tts/Model-projector-F16", 150 * MB),
+        ]);
+        assert_eq!(quants, ["Model-BF16", "Model-Q4_K_M"]);
+        assert!(drafts.is_empty());
+    }
+
+    #[test]
+    fn a_model_that_carries_imatrix_in_its_name_at_the_size_of_a_model_stays() {
+        let (quants, _) = split(&[
+            ("Qwen-iMatrix-NVFP4-MTP", 15 * GB),
+            ("Qwen-Q4_K_M", 20 * GB),
+            ("thinking/Qwen-IQ3_XS-thinking", 5 * GB),
+        ]);
+        assert_eq!(quants.len(), 3, "{quants:?}");
+    }
+
+    #[test]
+    fn the_word_must_be_whole_for_a_file_to_be_left_out() {
+        let (quants, _) = split(&[
+            ("Model-imatrixed-Q4", 200 * MB),
+            ("Model-lora2-Q4", 300 * MB),
+            ("Model-tokenizers", 300 * MB),
+            ("Big-BF16", 60 * GB),
+        ]);
+        assert_eq!(quants.len(), 4, "{quants:?}");
     }
 }

@@ -413,7 +413,7 @@ fn bare(id: &str, tags: &[&str], architecture: &str, template: Option<&str>) -> 
 fn synthetic(repos: Vec<Repo>) -> Fake {
     let mut fake = Fake::default();
     let tree: Vec<TreeEntry> = serde_json::from_str(
-        r#"[{"type":"file","path":"m-Q4.gguf","size":4,"lfs":{"oid":"00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff","size":4}}]"#,
+        r#"[{"type":"file","path":"m-Q4.gguf","size":4000000000,"lfs":{"oid":"00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff","size":4000000000}}]"#,
     )
     .unwrap();
     for repo in &repos {
@@ -523,7 +523,7 @@ fn with_projector_tree(fake: &mut Fake, id: &str) {
     let tree: Vec<TreeEntry> = serde_json::from_str(
         r#"[
         {"type":"file","path":"mmproj-F16.gguf","size":9,"lfs":{"oid":"ffeeddccbbaa99887766554433221100ffeeddccbbaa99887766554433221100","size":9}},
-        {"type":"file","path":"weights-Q4.gguf","size":4,"lfs":{"oid":"00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff","size":4}}]"#,
+        {"type":"file","path":"weights-Q4.gguf","size":4000000000,"lfs":{"oid":"00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff","size":4000000000}}]"#,
     )
     .unwrap();
     fake.trees.insert(id.into(), tree);
@@ -761,4 +761,37 @@ fn a_repository_with_only_drafts_is_left_out_and_one_named_with_the_kind_through
         !render(&catalog).contains("\"drafts\":[]"),
         "no list is written for a model with no draft"
     );
+}
+
+#[test]
+fn the_service_files_of_a_repository_are_left_out_and_a_repository_of_nothing_else_with_them() {
+    let mut fake = synthetic(vec![
+        bare("a/with-service-files", &[], "llama", Some("{{ messages }}")),
+        bare("b/only-a-vocabulary", &[], "llama", Some("{{ messages }}")),
+    ]);
+    fake.trees.insert(
+        "a/with-service-files".into(),
+        tree_json(&[
+            ("Model-Q4_K_M.gguf", 20_000_000_000),
+            ("Model-BF16.gguf", 40_000_000_000),
+            ("Model.imatrix.gguf", 192_000_000),
+            ("lora/Model-LoRA.gguf", 106_000_000),
+            ("tiny.gguf", 9_000_000),
+        ]),
+    );
+    fake.trees.insert(
+        "b/only-a-vocabulary".into(),
+        tree_json(&[("vision/Model-vocab.gguf", 9_400_000)]),
+    );
+
+    let (catalog, stats, _) = run(&fake, &Curated::default(), &Catalog::empty());
+
+    assert_eq!(names(&catalog), ["a/with-service-files"]);
+    let ids: Vec<_> = find(&catalog, "a/with-service-files")
+        .quants
+        .iter()
+        .map(|q| q.model_id.as_str())
+        .collect();
+    assert_eq!(ids, ["Model-Q4_K_M", "Model-BF16"]);
+    assert_eq!(stats.rejected.get(&Reason::NoWholeFile), Some(&1));
 }

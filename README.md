@@ -73,6 +73,15 @@ and coding" is `agent` and `code` together.
 `size` is in bytes. `sha256` is the file's SHA-256 as Hugging Face's LFS states it; it is left out for a
 file that is not in LFS. `model_id` is the path in the repository without `.gguf`.
 
+## Files that are not models
+
+A repository keeps files beside its models, and none of them is offered as a model: a file under
+50 MB (the smallest chat model of the catalog is 149 MB); and a file with `imatrix`, `lora`, `vocab`,
+`tokenizer`, `tts` or `token2wav` as a whole word in its path that is under a tenth of the largest file
+of the repository (importance data of a quantization, an adapter, a vocabulary, the parts of a speech
+model). A model that only carries `imatrix` in its name, at the size of a model, is a model. A repository
+left with no model file is left out.
+
 ## Drafts
 
 A draft is a small file for speculative decoding that pairs with a model and runs with no model of its

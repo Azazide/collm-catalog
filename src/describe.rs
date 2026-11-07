@@ -43,6 +43,15 @@ const POINTS_ELSEWHERE: &[&str] = &[
     "which quant",
     "which file",
     "the first thing to figure out",
+    "find ",
+    "you can ",
+    "for the full",
+    "for full",
+    "built by",
+    "for large files",
+    "disable thinking",
+    "lm studio",
+    "ollama",
 ];
 
 /// A paragraph that says nothing of the kind is a slogan, a news item or an advertisement.
@@ -234,6 +243,9 @@ fn prose(block: &str) -> Option<String> {
         return None;
     }
     let lower = text.to_lowercase();
+    if names_a_file_or_a_command_or_points_around(&text, &lower) {
+        return None;
+    }
     if POINTS_ELSEWHERE.iter().any(|p| lower.starts_with(p)) {
         return None;
     }
@@ -254,6 +266,31 @@ const NOTE_PREFIXES: [&str; 4] = [
 /// Whether `text` is one of the sentences [`base_model_note`] writes.
 pub fn is_note(text: &str) -> bool {
     NOTE_PREFIXES.iter().any(|prefix| text.starts_with(prefix))
+}
+
+/// A paragraph that opens with a file name (`Model-Q4.gguf — a conventional Q4`), carries a command
+/// line option (`--chat-template-kwargs`), or points at something "below" or "above" says how to use
+/// or find something, not what the model is.
+fn names_a_file_or_a_command_or_points_around(text: &str, lower: &str) -> bool {
+    if text.split_whitespace().next().is_some_and(|first| {
+        first
+            .to_lowercase()
+            .trim_end_matches([',', ':', ';'])
+            .ends_with(".gguf")
+    }) {
+        return true;
+    }
+    if text.match_indices(" --").any(|(at, _)| {
+        text[at + 3..]
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_alphabetic())
+    }) {
+        return true;
+    }
+    lower
+        .split(|c: char| !c.is_alphanumeric())
+        .any(|word| word == "below" || word == "above")
 }
 
 /// What the tags say a repository was made from: `base_model:quantized:owner/name`.
@@ -595,6 +632,44 @@ mod tests {
             description(readme),
             "A distilled reasoning model for maths and code that runs well on a laptop with a small context."
         );
+    }
+
+    #[test]
+    fn instructions_credits_and_pointers_seen_in_real_readmes_are_not_descriptions() {
+        let cases = [
+            "Find architecture and usage details in the original model card.",
+            "Find more details in the original model card: https://huggingface.co/org/model for this model.",
+            "You can either specify a new local-dir or download them using the command line interface.",
+            "For the full capability, training, and evaluation writeup, see the base model card of this model.",
+            "Built by the team behind Atomic Chat, the app that runs open-weight models locally and offline.",
+            "For large files, we split them into multiple segments due to the limitation of file upload here.",
+            "Disable thinking via the chat template option when you want a fast model answer without a long trace.",
+            "LM Studio and Ollama load any text quant of this model; for images keep the projector beside it.",
+            "Model-Q4_K_M.gguf is a conventional quantization of this model where most tensors are Q4_K.",
+            "Run the model with --chat-template-kwargs set so that the chat model answers without thinking.",
+            "The sizes below are the live model weight sizes of the files in this repository at the head.",
+            "The table above lists every file of this model and the quality that each of them keeps.",
+        ];
+        for case in cases {
+            assert_eq!(
+                description(&format!(
+                    "{case}\n\nA small model that is made for careful answers to maths questions."
+                )),
+                "A small model that is made for careful answers to maths questions.",
+                "{case}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_real_description_that_merely_touches_those_words_is_kept() {
+        for ok in [
+            "A reasoning model that finds bugs in code and explains the cause of each in plain words.",
+            "Fine-tuned from a base model by training further on a curated set of long documents for chat.",
+            "An instruction model with a long context that keeps the answer of every question short and exact.",
+        ] {
+            assert_eq!(description(ok), ok);
+        }
     }
 
     #[test]
