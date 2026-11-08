@@ -22,6 +22,8 @@ repository is listed when
   Face reads that metadata from the repository's first file alphabetically, which is often a vision
   projector (`mmproj-…`, architecture `clip`); then the metadata says nothing of the model and only a
   chat label such as `text-generation` or `image-text-to-text` vouches for it;
+- not a build for a big-endian machine: `BE` as a word of its name and a README that says its files are
+  byte-swapped or for IBM Z (those do not load on a Mac);
 - at least one weights file is whole and runs on its own. A file cut into `-00001-of-00003` parts is
   skipped, and a repository that has only those is left out; so is one whose only whole files are
   drafts (below).
@@ -33,7 +35,7 @@ and owners, names and architectures that never are. An unknown key in it is an e
 ## The file
 
 ```json
-{"format":1,"rules":2,"models":[
+{"format":1,"rules":3,"models":[
 {"model_name":"gemma-4-12b-it-GGUF","developer":"unsloth","sha":"fc034cf…","description":"…", …},
 …
 ]}
@@ -52,7 +54,7 @@ description); the program reads every repository again when it differs, and a re
 | `downloads`, `likes` | as Hugging Face counts them (downloads over 30 days) |
 | `created_at`, `updated_at`, `license`, `pipeline_tag` | from the repository, left out when it has none |
 | `architecture`, `context_length` | from the GGUF header; empty (`architecture`) and left out (`context_length`) when Hugging Face read a projector's instead |
-| `capabilities` | what the model can do, sorted: `vision`, `tools`, `code`, `agent` (see below) |
+| `capabilities` | what the model can do, sorted: `vision`, `audio`, `video`, `tools`, `code`, `agent` (see below) |
 | `readme` | the README at `sha`, left out when there is none |
 | `quants` | every whole weights file that runs on its own, smallest first: `{model_id, path, size, sha256}` |
 | `drafts` | the drafts for speculative decoding (`mtp`, `dspark`, `dflash`, `eagle3`) that pair with a model, the same shape; left out when there are none (see below) |
@@ -66,6 +68,8 @@ guess about quality; every model is a chat model, so that has no entry.
 | | the repository |
 |---|---|
 | `vision` | has a vision projector (`mmproj-…`), the file llama.cpp needs to read an image. A label saying "image-text-to-text" without one does not count |
+| `audio` | takes sound in: has a vision projector (llama.cpp reads sound through the same file as an image) and Hugging Face labels it so: the pipeline `any-to-any` or `audio-text-to-text`, a tag `audio`, `speech` or `omni`, or `audio`, `omni`, `voxtral` or `ultravox` as a whole word of its name or of the model it was made from |
+| `video` | takes moving pictures in: has a vision projector and is labelled `video-text-to-text`, tagged `video` or `omni`, or has `video` or `omni` as a whole word of its name or of its base model's |
 | `tools` | its chat template uses a list of tools, `tools` as a whole word inside a `{{ … }}` or `{% … %}` (not in a comment, nor in text that says the model takes none); when the template is unknown, an explicit tag (`function-calling`, `tool-use`) stands in |
 | `code` | is made for programming: a whole word of its name (`coder`, `code`, `devstral`, not `encoder`), its tags, or the name of the model it was made from say so |
 | `agent` | is put forward for agents by its tags, its name, or three mentions of agents and tool calling in its README, and its template, when known, takes tools |

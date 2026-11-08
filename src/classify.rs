@@ -1,10 +1,17 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-//! What a model can do, for the app to filter and sort by: `vision`, `tools`, `code`, `agent`.
+//! What a model can do, for the app to filter and sort by: `vision`, `audio`, `video`, `tools`, `code`,
+//! `agent`.
 //!
 //! Every verdict comes from something checkable in the repository, never from a guess about quality:
 //!
 //! - `vision`: the repository has a vision projector (`mmproj-…`), the file llama.cpp needs to read
 //!   an image. A label saying "image-text-to-text" without one does not count.
+//! - `audio`, `video`: the model takes sound or moving pictures in. llama.cpp reads both through the
+//!   same projector file as an image, so a repository with no projector has neither, whatever its
+//!   labels say. With one, Hugging Face's own labels say which: the pipeline `any-to-any` or
+//!   `audio-text-to-text`, a tag `audio` or `speech`, for audio; `video-text-to-text` or a tag `video`,
+//!   for video; and `omni` (a whole word of its name, or of the model it was made from, or a tag) for
+//!   both, those being the models that take every kind of input.
 //! - `tools`: the chat template takes a list of tools. When the metadata Hugging Face gave was a
 //!   projector's and the template is unknown, an explicit tag (`function-calling`, `tool-use`) stands in.
 //! - `code`: made for programming, by its name (a whole word: `coder`, `code`, `devstral`, not
@@ -16,6 +23,8 @@
 //! "Agent and coding" is both flags at once; "chat" is every model, so it has no flag.
 
 pub const VISION: &str = "vision";
+pub const AUDIO: &str = "audio";
+pub const VIDEO: &str = "video";
 pub const TOOLS: &str = "tools";
 pub const CODE: &str = "code";
 pub const AGENT: &str = "agent";
@@ -51,6 +60,12 @@ const TOOL_TAGS: &[&str] = &[
     "tool_calling",
 ];
 const AGENT_TAGS: &[&str] = &["agent", "agents", "agentic"];
+const AUDIO_TAGS: &[&str] = &["audio", "speech", "audio-text-to-text", "omni"];
+const AUDIO_PIPELINES: &[&str] = &["audio-text-to-text", "any-to-any"];
+const AUDIO_WORDS: &[&str] = &["audio", "omni", "voxtral", "ultravox"];
+const VIDEO_TAGS: &[&str] = &["video", "video-text-to-text", "omni"];
+const VIDEO_PIPELINES: &[&str] = &["video-text-to-text"];
+const VIDEO_WORDS: &[&str] = &["video", "omni"];
 const AGENT_WORDS: &[&str] = &["agent", "agents", "agentic"];
 /// Whether a chat template (Jinja) takes a list of tools: `tools` as a whole word inside a `{{ … }}` or
 /// `{% … %}`, where a template uses it. The word in a comment (`{# … #}`) or in the plain text between
@@ -105,6 +120,8 @@ pub struct Signals<'a> {
     /// `owner/name`.
     pub id: &'a str,
     pub tags: &'a [String],
+    /// Hugging Face's label for what the repository does (`text-generation`, `any-to-any`, …).
+    pub pipeline_tag: Option<&'a str>,
     /// Whether the chat template takes tools; `None` when the template is not known.
     pub tools: Option<bool>,
     pub has_projector: bool,
@@ -152,6 +169,21 @@ pub fn capabilities(signals: &Signals) -> Vec<String> {
 
     if signals.has_projector {
         found.push(VISION);
+        let pipeline = signals.pipeline_tag.map(str::to_lowercase);
+        let in_pipelines = |list: &[&str]| pipeline.as_deref().is_some_and(|p| list.contains(&p));
+        let in_names = |list: &[&str]| names.iter().any(|w| list.contains(&w.as_str()));
+        if has_tag(signals.tags, AUDIO_TAGS)
+            || in_pipelines(AUDIO_PIPELINES)
+            || in_names(AUDIO_WORDS)
+        {
+            found.push(AUDIO);
+        }
+        if has_tag(signals.tags, VIDEO_TAGS)
+            || in_pipelines(VIDEO_PIPELINES)
+            || in_names(VIDEO_WORDS)
+        {
+            found.push(VIDEO);
+        }
     }
 
     let tool_tag = has_tag(signals.tags, TOOL_TAGS);
@@ -197,9 +229,21 @@ mod tests {
         projector: bool,
         readme: Option<&str>,
     ) -> Vec<String> {
+        in_pipeline(id, tags, None, tools, projector, readme)
+    }
+
+    fn in_pipeline(
+        id: &str,
+        tags: &[String],
+        pipeline_tag: Option<&str>,
+        tools: Option<bool>,
+        projector: bool,
+        readme: Option<&str>,
+    ) -> Vec<String> {
         capabilities(&Signals {
             id,
             tags,
+            pipeline_tag,
             tools,
             has_projector: projector,
             readme,
@@ -371,5 +415,99 @@ mod tests {
         assert!(template_takes_tools(
             "{# tools #}{% set a = 1 %}text {%- if tools %}x{% endif %}"
         ));
+    }
+
+    // The repositories behind these cases are real ones of the catalog: Gemma 4 E2B (any-to-any with a
+    // projector), LFM3-Audio (tags audio and speech), Qwen2.5-Omni (the word only in the base model's tag),
+    // and a text model that is tagged `audio` with no projector.
+    #[test]
+    fn a_model_takes_sound_and_moving_pictures_in_only_with_a_projector_and_a_label_that_says_so() {
+        let any = Some("any-to-any");
+        assert_eq!(
+            in_pipeline(
+                "ggml-org/gemma-4-E2B-it-GGUF",
+                &[],
+                any,
+                Some(true),
+                true,
+                None
+            ),
+            [AUDIO, TOOLS, VISION]
+        );
+        assert_eq!(
+            in_pipeline(
+                "l/LFM3-Audio-2B-GGUF",
+                &tags(&["audio", "speech"]),
+                None,
+                Some(true),
+                true,
+                None
+            ),
+            [AUDIO, TOOLS, VISION]
+        );
+        let base = tags(&["base_model:quantized:Qwen/Qwen2.5-Omni-7B"]);
+        assert_eq!(
+            in_pipeline(
+                "ggml-org/Qwen2.5-Omni-7B-GGUF",
+                &base,
+                any,
+                Some(true),
+                true,
+                None
+            ),
+            [AUDIO, TOOLS, VIDEO, VISION],
+            "omni takes every kind of input"
+        );
+        assert_eq!(
+            in_pipeline(
+                "o/Clips-GGUF",
+                &[],
+                Some("video-text-to-text"),
+                Some(true),
+                true,
+                None
+            ),
+            [TOOLS, VIDEO, VISION]
+        );
+        // A label with no projector is not a way to take the input in.
+        assert_eq!(
+            in_pipeline(
+                "o/Tagged-GGUF",
+                &tags(&["audio", "video"]),
+                any,
+                Some(true),
+                false,
+                None
+            ),
+            [TOOLS]
+        );
+        // A projector with no label says only that the model sees.
+        assert_eq!(
+            in_pipeline(
+                "o/Vision-GGUF",
+                &[],
+                Some("image-text-to-text"),
+                Some(true),
+                true,
+                None
+            ),
+            [TOOLS, VISION]
+        );
+        // `audio` has to be a whole word of the name: a model about audiobooks is not one.
+        assert_eq!(
+            in_pipeline(
+                "o/Audiobook-Writer-GGUF",
+                &[],
+                None,
+                Some(false),
+                true,
+                None
+            ),
+            [VISION]
+        );
+        assert_eq!(
+            in_pipeline("o/Voxtral-Mini-GGUF", &[], None, Some(false), true, None),
+            [AUDIO, VISION]
+        );
     }
 }

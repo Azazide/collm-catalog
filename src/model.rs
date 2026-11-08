@@ -13,7 +13,7 @@ pub const FORMAT: u32 = 1;
 /// a catalog made under other rules is read again, so a change to a rule reaches every model at the
 /// next run and not only those whose repository changed. Bump it with any such change. The app ignores
 /// it: it reads `format` and `models`.
-pub const RULES: u32 = 2;
+pub const RULES: u32 = 3;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Catalog {

@@ -246,6 +246,9 @@ fn process(
         return Ok(Outcome::Rejected(reason));
     }
     let readme = hf.readme(&detail.id, &rev)?;
+    if describe::is_big_endian_build(&detail.id, readme.as_deref().unwrap_or_default()) {
+        return Ok(Outcome::Rejected(Reason::BigEndian));
+    }
     let note = describe::base_model_note(&detail.tags);
     let description = Some(
         readme
@@ -277,6 +280,7 @@ fn process(
             capabilities: classify::capabilities(&Signals {
                 id: &detail.id,
                 tags: &detail.tags,
+                pipeline_tag: detail.pipeline_tag.as_deref(),
                 tools,
                 has_projector: !found.mmproj.is_empty(),
                 readme: readme.as_deref(),

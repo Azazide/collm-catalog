@@ -1085,3 +1085,23 @@ fn a_template_that_only_mentions_tools_in_a_comment_or_in_its_text_is_not_a_tool
     assert_eq!(find(&catalog, "a/real").capabilities, ["tools"]);
     assert!(find(&catalog, "b/says-no").capabilities.is_empty());
 }
+
+// Found in the app: two repositories of one owner are byte-swapped builds for IBM Z, which no Mac loads.
+#[test]
+fn a_byte_swapped_build_for_a_big_endian_machine_is_left_out_and_its_little_endian_twin_stays() {
+    let mut fake = synthetic(vec![
+        bare("t/Model-BE-GGUF", &[], "llama", Some("{{ messages }}")),
+        bare("t/Model-GGUF", &[], "llama", Some("{{ messages }}")),
+    ]);
+    fake.readmes.insert(
+        "t/Model-BE-GGUF".into(),
+        "# Model\n\nThese models are byte-swapped to run on IBM Z & LinuxONE systems.".into(),
+    );
+    fake.readmes.insert(
+        "t/Model-GGUF".into(),
+        "# Model\n\nA compact model that follows instructions and writes clean code.".into(),
+    );
+    let (catalog, stats, _) = run(&fake, &Curated::default(), &Catalog::empty());
+    assert_eq!(names(&catalog), ["t/Model-GGUF"]);
+    assert_eq!(stats.rejected.get(&Reason::BigEndian), Some(&1));
+}

@@ -319,6 +319,37 @@ pub fn base_model_note(tags: &[String]) -> Option<String> {
         .map(|base| format!("{}{base}.", NOTE_PREFIXES[3]))
 }
 
+/// What a README says of a build for a big-endian machine (IBM Z, `s390x`): files whose bytes are swapped
+/// do not load on a little-endian one, which every Mac is.
+const BIG_ENDIAN_WORDS: [&str; 6] = [
+    "byte-swapped",
+    "byte swapped",
+    "big-endian",
+    "big endian",
+    "s390x",
+    "linuxone",
+];
+
+/// How much of the README is read for [`is_big_endian_build`]: where a repository says what its files are.
+const README_HEAD: usize = 2_000;
+
+/// Whether a repository is a build for a big-endian machine: `BE` is a whole word of its name (`Granite-
+/// 4.2-3B-BE-GGUF`) and the head of its README says the files are byte-swapped or for IBM Z. Both are asked:
+/// a name with `BE` in it alone is not a reason, nor is a README that lists `s390x` among the machines
+/// a program runs on.
+pub fn is_big_endian_build(repo_id: &str, readme: &str) -> bool {
+    let name = repo_id.rsplit('/').next().unwrap_or(repo_id).to_lowercase();
+    if !name.split(['-', '_', '.']).any(|word| word == "be") {
+        return false;
+    }
+    let head: String = readme
+        .chars()
+        .take(README_HEAD)
+        .collect::<String>()
+        .to_lowercase();
+    BIG_ENDIAN_WORDS.iter().any(|w| head.contains(w)) || head.contains("ibm z")
+}
+
 /// Links give their text, images and tags vanish, emphasis marks go, entities become characters.
 fn clean(block: &str) -> String {
     let linked = strip_links(block);
@@ -932,5 +963,26 @@ mod tests {
         }
         let long = format!("base_model:finetune:o/{}", "n".repeat(97));
         assert_eq!(base_model_note(&tag(&long)), None);
+    }
+
+    #[test]
+    fn a_build_for_a_big_endian_machine_is_told_by_its_name_and_its_readme_together() {
+        let readme = "---\nlicense: apache-2.0\n---\n# Granite\n\nThese models are byte-swapped to run on IBM Z & LinuxONE systems.";
+        assert!(is_big_endian_build(
+            "taronaeo/Granite-4.2-3B-BE-GGUF",
+            readme
+        ));
+        assert!(is_big_endian_build("o/m_be.gguf", "Built for s390x."));
+        // The name alone, the README alone, and `be` inside a word are not enough.
+        assert!(!is_big_endian_build(
+            "o/Model-BE-GGUF",
+            "A model for Belgian Dutch."
+        ));
+        assert!(!is_big_endian_build("o/Model-GGUF", readme));
+        assert!(!is_big_endian_build("o/Maybe-GGUF", readme));
+        assert!(!is_big_endian_build("o/Model-BE-GGUF", ""));
+        // Only the head of the README is read.
+        let late = format!("{}\nbyte-swapped", "x ".repeat(2_000));
+        assert!(!is_big_endian_build("o/Model-BE-GGUF", &late));
     }
 }

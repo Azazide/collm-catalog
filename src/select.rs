@@ -87,6 +87,7 @@ pub enum Reason {
     NoChatTemplate,
     NoWholeFile,
     OnlyDrafts,
+    BigEndian,
 }
 
 impl Reason {
@@ -107,6 +108,7 @@ impl Reason {
             }
             Reason::NoWholeFile => "no weights file is whole (all are cut into parts)",
             Reason::OnlyDrafts => "the only whole files are drafts for speculative decoding",
+            Reason::BigEndian => "its files are byte-swapped for a big-endian machine (IBM Z)",
         }
     }
 }
