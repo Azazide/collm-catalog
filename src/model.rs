@@ -8,9 +8,19 @@ use serde::{Deserialize, Serialize};
 
 pub const FORMAT: u32 = 1;
 
+/// The version of the rules that decide what a repository's entry says (which file is a model, a draft
+/// or not a model, what a description is, what a template taking tools is). An entry carried over from
+/// a catalog made under other rules is read again, so a change to a rule reaches every model at the
+/// next run and not only those whose repository changed. Bump it with any such change. The app ignores
+/// it: it reads `format` and `models`.
+pub const RULES: u32 = 2;
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Catalog {
     pub format: u32,
+    /// The rules the models were made under; 0 for a file that names none.
+    #[serde(default)]
+    pub rules: u32,
     pub models: Vec<Model>,
 }
 
@@ -18,8 +28,39 @@ impl Catalog {
     pub fn empty() -> Self {
         Catalog {
             format: FORMAT,
+            rules: RULES,
             models: Vec::new(),
         }
+    }
+
+    /// What the next run starts from: this catalog's models, or nothing when they are to be read again,
+    /// by request (`refresh`) or because they were made under other [`RULES`].
+    pub fn carried(&self, refresh: bool) -> Catalog {
+        if refresh || self.rules != RULES {
+            Catalog::empty()
+        } else {
+            self.clone()
+        }
+    }
+
+    /// Takes out the models whose data is not well formed (see [`Model::problems`]) and says which,
+    /// and why: one repository's odd data must not stop the catalog, nor go into it.
+    pub fn drop_malformed(&mut self) -> Vec<(String, Vec<String>)> {
+        let mut dropped = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        self.models.retain(|model| {
+            let mut problems = model.problems();
+            if !seen.insert(model.model_name.to_lowercase()) {
+                problems.push("listed twice".to_string());
+            }
+            if problems.is_empty() {
+                true
+            } else {
+                dropped.push((model.model_name.clone(), problems));
+                false
+            }
+        });
+        dropped
     }
 
     /// The catalog a file holds, or an empty one when the text is not a catalog of this format: a
@@ -80,6 +121,60 @@ impl Model {
     pub fn repo_id(&self) -> String {
         self.model_name.clone()
     }
+
+    /// What is wrong with the entry, as the app and a download would meet it: a name that is not
+    /// `owner/name`, a commit that is not a full hash, no file to download, a file with no size or no
+    /// SHA-256, an address that is not on Hugging Face under this repository and commit.
+    pub fn problems(&self) -> Vec<String> {
+        let mut found = Vec::new();
+        if !is_repo_id(&self.model_name) {
+            found.push(format!("`{}` is not owner/name", self.model_name));
+            return found;
+        }
+        let owner = self.model_name.split('/').next().unwrap_or_default();
+        if !self.developer.eq_ignore_ascii_case(owner) {
+            found.push(format!("owner {} is not {owner}", self.developer));
+        }
+        if self.sha.len() != 40 || !self.sha.bytes().all(|b| b.is_ascii_hexdigit()) {
+            found.push("the commit is not a 40-digit hash".to_string());
+            return found;
+        }
+        let at = format!(
+            "https://huggingface.co/{}/resolve/{}/",
+            self.model_name, self.sha
+        );
+        if self.quants.is_empty() {
+            found.push("no file to download".to_string());
+        }
+        for (kind, files) in [
+            ("file", &self.quants),
+            ("draft", &self.drafts),
+            ("projector", &self.mmproj_models),
+        ] {
+            for file in files {
+                if let Some(problem) = file.problem(&at) {
+                    found.push(format!("{kind} {}: {problem}", file.model_id));
+                }
+            }
+        }
+        if !self.readme.is_empty() && self.readme != format!("{at}README.md") {
+            found.push("the README is not this repository's at this commit".to_string());
+        }
+        found
+    }
+}
+
+/// `owner/name` of a repository: letters, digits, `.`, `_` and `-`, each part not longer than Hugging
+/// Face allows (96 characters).
+pub fn is_repo_id(text: &str) -> bool {
+    let part = |p: &str| {
+        !p.is_empty()
+            && p.len() <= 96
+            && p.bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+    };
+    text.split_once('/')
+        .is_some_and(|(owner, name)| part(owner) && part(name))
 }
 
 /// One downloadable file.
@@ -95,10 +190,44 @@ pub struct File {
     pub sha256: Option<String>,
 }
 
+impl File {
+    /// What is wrong with the file, given the address every file of its model starts with.
+    fn problem(&self, at: &str) -> Option<String> {
+        if self.model_id.is_empty() {
+            return Some("no name".to_string());
+        }
+        if self.size == 0 {
+            return Some("no size".to_string());
+        }
+        if !self
+            .sha256
+            .as_deref()
+            .is_some_and(|h| h.len() == 64 && h.bytes().all(|b| b.is_ascii_hexdigit()))
+        {
+            return Some("no SHA-256".to_string());
+        }
+        let Some(tail) = self.path.strip_prefix(at) else {
+            return Some(format!("the address {} is not under {at}", self.path));
+        };
+        let plain = !tail.is_empty()
+            && !tail.contains("//")
+            && tail.split('/').all(|s| {
+                !s.is_empty() && s != "." && s != ".." && s != "%2e" && s != "%2E" && s != "%2e%2e"
+            })
+            && !tail
+                .chars()
+                .any(|c| c.is_control() || c == '\\' || c == ' ');
+        (!plain).then(|| format!("the address {} leaves the commit", self.path))
+    }
+}
+
 /// The file as text: one model per line, so a day's change reads as a diff and the file stays small.
 pub fn render(catalog: &Catalog) -> String {
     let mut out = String::new();
-    out.push_str(&format!("{{\"format\":{},\"models\":[\n", catalog.format));
+    out.push_str(&format!(
+        "{{\"format\":{},\"rules\":{},\"models\":[\n",
+        catalog.format, catalog.rules
+    ));
     for (i, model) in catalog.models.iter().enumerate() {
         out.push_str(&serde_json::to_string(model).expect("a model serializes"));
         out.push_str(if i + 1 < catalog.models.len() {
@@ -109,6 +238,17 @@ pub fn render(catalog: &Catalog) -> String {
     }
     out.push_str("]}\n");
     out
+}
+
+/// A catalog with fewer models than this is a failed run, whatever the last one held: the shrink guard
+/// alone lets a catalog lose a third of itself a night, five nights running.
+pub fn check_floor(next: usize, floor: usize) -> Result<(), String> {
+    if next < floor {
+        return Err(format!(
+            "the new catalog has {next} models, fewer than the {floor} a good run gives (use --force to publish it)"
+        ));
+    }
+    Ok(())
 }
 
 /// A run that would publish a catalog much smaller than the last one is a failed run (Hugging Face

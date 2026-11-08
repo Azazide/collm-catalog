@@ -66,16 +66,23 @@ fn normal(name: &str) -> String {
     words(name).join("-")
 }
 
+/// A draft named by its folder or its first word that weighs at least this share (one in this many) of
+/// the file that is its name without the kind is a model with the head kept in it, not a draft: the
+/// real ones measured 0.001 to 0.11 of their mate, the models of a folder named for the kind 1.03 to
+/// 1.04.
+const MODEL_OF_THE_KIND_SHARE: u64 = 2;
+
 /// Whether a file is a draft, from its path without `.gguf`, its size, the largest file of the
 /// repository and the sizes of its whole files by their normal names.
 ///
 /// A draft is a file in a folder of the kind's name (`MTP/…`), or one that begins with it
-/// (`mtp-…`, the way upstream names them). A name that holds the kind anywhere else, as
-/// `Model-MTP-Q4_K_M` or `Model-Q8_0-MTP`, is a model made with the head kept in it: such a file
-/// weighs about what the same model without the head weighs (measured, 1.0 to 1.07 times, in 132
-/// files of 40 repositories), and none of them was small. It is a draft only when it is a sliver,
-/// under a tenth of the file that is its name without the kind, or of the largest file when no file
-/// is.
+/// (`mtp-…`, the way upstream names them), unless it weighs half of the file that is its name without
+/// the kind or more: such a file (`mtp/Model-MTP-Q4_K_M` beside `Model-Q4_K_M`) is a whole model that
+/// is only filed under the name. A name that holds the kind anywhere else, as `Model-MTP-Q4_K_M` or
+/// `Model-Q8_0-MTP`, is a model made with the head kept in it: such a file weighs about what the same
+/// model without the head weighs (measured, 1.0 to 1.07 times, in 132 files of 40 repositories), and
+/// none of them was small. It is a draft only when it is a sliver, under a tenth of the file that is
+/// its name without the kind, or of the largest file when no file is.
 fn is_draft(path: &str, size: u64, largest: u64, sizes: &HashMap<String, u64>) -> bool {
     let (folder, base) = match path.rsplit_once('/') {
         Some((folder, base)) => (Some(folder), base),
@@ -83,27 +90,29 @@ fn is_draft(path: &str, size: u64, largest: u64, sizes: &HashMap<String, u64>) -
     };
     let parts = words(base);
     DRAFT_KINDS.iter().any(|kind| {
-        if folder.is_some_and(|f| {
+        let named_by_folder = folder.is_some_and(|f| {
             f.split('/')
                 .next()
                 .is_some_and(|d| d.eq_ignore_ascii_case(kind))
-        }) {
-            return true;
-        }
-        let Some(at) = parts.iter().position(|w| w == kind) else {
+        });
+        let at = parts.iter().position(|w| w == kind);
+        if !named_by_folder && at.is_none() {
             return false;
-        };
-        if at == 0 {
-            return true;
         }
         let without: Vec<&str> = parts
             .iter()
             .enumerate()
-            .filter(|(i, _)| *i != at)
+            .filter(|(i, _)| Some(*i) != at)
             .map(|(_, w)| w.as_str())
             .collect();
-        let reference = sizes.get(&without.join("-")).copied().unwrap_or(largest);
-        size.saturating_mul(DRAFT_SIZE_RATIO) < reference
+        // Without the kind in its own name a file has no mate: its name without the kind is its name.
+        let mate = at.and_then(|_| sizes.get(&without.join("-")).copied());
+        if named_by_folder || at == Some(0) {
+            // Named a draft by where it is filed or how it begins: a model only when it is as big as
+            // the model it shares its name with.
+            return mate.is_none_or(|mate| size.saturating_mul(MODEL_OF_THE_KIND_SHARE) < mate);
+        }
+        size.saturating_mul(DRAFT_SIZE_RATIO) < mate.unwrap_or(largest)
     })
 }
 
@@ -124,17 +133,34 @@ fn is_sha256(text: &str) -> bool {
     text.len() == 64 && text.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
+/// Whether a path of a repository's tree is one that can be put into an address below the commit
+/// the files are pinned to: no `.` or `..` segment, no empty one, no backslash or control character.
+/// `rev/../../other/repo/resolve/main/x` would leave the commit, and the repository, once an
+/// address is resolved.
+fn is_plain_path(path: &str) -> bool {
+    !path.is_empty()
+        && !path.contains('\\')
+        && !path.chars().any(char::is_control)
+        && path
+            .split('/')
+            .all(|segment| !segment.is_empty() && segment != "." && segment != "..")
+}
+
 pub fn classify(repo: &str, rev: &str, tree: &[TreeEntry]) -> Files {
     let mut whole = Vec::new();
     let mut mmproj = Vec::new();
+    // The largest weights file of the repository, parts included: a repository whose real weights are
+    // cut into parts has nothing whole but an importance matrix, which is a sliver of a part and not
+    // the repository's largest whole file.
+    let mut overall = 0u64;
     for entry in tree {
-        if entry.kind != "file" || !entry.path.to_ascii_lowercase().ends_with(".gguf") {
+        if entry.kind != "file"
+            || !entry.path.to_ascii_lowercase().ends_with(".gguf")
+            || !is_plain_path(&entry.path)
+        {
             continue;
         }
         let name = entry.path.rsplit('/').next().unwrap_or(&entry.path);
-        if is_split_part(name) {
-            continue;
-        }
         let size = entry
             .lfs
             .as_ref()
@@ -145,11 +171,22 @@ pub fn classify(repo: &str, rev: &str, tree: &[TreeEntry]) -> Files {
         if size == 0 {
             continue;
         }
-        let sha256 = entry
+        let is_projector = name.to_ascii_lowercase().contains("mmproj");
+        if !is_projector {
+            overall = overall.max(size);
+        }
+        if is_split_part(name) {
+            continue;
+        }
+        // A file with no hash from Hugging Face's LFS cannot be checked once downloaded: not offered.
+        let Some(sha256) = entry
             .lfs
             .as_ref()
             .map(|l| l.oid.to_ascii_lowercase())
-            .filter(|oid| is_sha256(oid));
+            .filter(|oid| is_sha256(oid))
+        else {
+            continue;
+        };
         let file = File {
             model_id: entry.path[..entry.path.len() - ".gguf".len()].to_string(),
             path: format!(
@@ -157,16 +194,15 @@ pub fn classify(repo: &str, rev: &str, tree: &[TreeEntry]) -> Files {
                 encode_path(&entry.path)
             ),
             size,
-            sha256,
+            sha256: Some(sha256),
         };
-        if name.to_ascii_lowercase().contains("mmproj") {
+        if is_projector {
             mmproj.push(file);
         } else {
             whole.push(file);
         }
     }
 
-    let overall = whole.iter().map(|f| f.size).max().unwrap_or(0);
     whole.retain(|f| !is_not_a_model(&f.model_id, f.size, overall));
     let largest = whole.iter().map(|f| f.size).max().unwrap_or(0);
     let sizes: HashMap<String, u64> = whole
@@ -311,10 +347,18 @@ mod tests {
             qwen.quants.iter().all(|q| !q.model_id.contains("-of-")),
             "no part is offered"
         );
+        // A gated repository's tree comes with every hash scrubbed to asterisks (no such repository
+        // is read: the list leaves it out); here the hashes are put back so the files count.
+        let mut gated = fixture("gated");
+        for entry in &mut gated {
+            if let Some(lfs) = entry.lfs.as_mut() {
+                lfs.oid = OID.to_string();
+            }
+        }
         let mixed = classify(
             "orcarouter/Qwen3.8-Flash-Next-Uncensored-GGUF",
             "98eb335",
-            &fixture("gated"),
+            &gated,
         );
         assert_eq!(
             mixed.quants.len(),
@@ -344,8 +388,9 @@ mod tests {
             },
             file("README.md", 10, None),
             file("empty.gguf", 0, None),
-            file("Weights.GGUF", 5 * GB, None),
+            file("Weights.GGUF", 5 * GB, Some(OID)),
             file("plain-Q4.gguf", GB, Some(OID)),
+            file("not-in-lfs.gguf", 2 * GB, None),
         ];
         let files = classify("a/b", "r", &tree);
         let ids: Vec<_> = files.quants.iter().map(|q| q.model_id.as_str()).collect();
@@ -357,19 +402,23 @@ mod tests {
     }
 
     #[test]
-    fn a_hash_that_is_not_sha256_is_left_out_and_one_in_capitals_is_lowered() {
+    fn a_file_whose_hash_is_not_sha256_is_not_offered_and_one_in_capitals_is_lowered() {
+        // What cannot be checked after the download is not offered: a file outside LFS, or with an oid
+        // that is not a SHA-256.
         let tree = vec![
             file("a.gguf", GB, Some("not-a-hash")),
             file("b.gguf", 2 * GB, Some(&OID.to_ascii_uppercase())),
+            file("c.gguf", 3 * GB, None),
         ];
         let files = classify("a/b", "r", &tree);
-        assert_eq!(files.quants[0].sha256, None);
-        assert_eq!(files.quants[1].sha256.as_deref(), Some(OID));
+        assert_eq!(files.quants.len(), 1);
+        assert_eq!(files.quants[0].model_id, "b");
+        assert_eq!(files.quants[0].sha256.as_deref(), Some(OID));
     }
 
     #[test]
     fn an_awkward_file_name_is_encoded_in_the_address() {
-        let files = classify("a/b", "r", &[file("dir one/m+x.gguf", GB, None)]);
+        let files = classify("a/b", "r", &[file("dir one/m+x.gguf", GB, Some(OID))]);
         assert_eq!(
             files.quants[0].path,
             "https://huggingface.co/a/b/resolve/r/dir%20one/m%2Bx.gguf"
@@ -553,5 +602,75 @@ mod tests {
             ("Big-BF16", 60 * GB),
         ]);
         assert_eq!(quants.len(), 4, "{quants:?}");
+    }
+
+    // Found on the real catalog: JetBrains/Mellum2.1-12B-A2.5B-Thinking-GGUF files whole models in a folder
+    // `mtp/` as `…-MTP-<quant>`, each 1.03 to 1.04 times its mate; its one draft is `mtp-…-BF16`.
+    #[test]
+    fn a_whole_model_filed_in_a_folder_of_the_kind_is_a_model_and_the_real_draft_beside_it_stays_one()
+     {
+        let (quants, drafts) = split(&[
+            ("Mellum-Q4_K_M", 7_900_000_000),
+            ("Mellum-Q8_0", 13_000_000_000),
+            ("Mellum-BF16", 24_000_000_000),
+            ("mtp/Mellum-MTP-Q4_K_M", 8_300_000_000),
+            ("mtp/Mellum-MTP-Q8_0", 13_400_000_000),
+            ("mtp/Mellum-MTP-BF16", 25_000_000_000),
+            ("mtp-Mellum-BF16", 1_770_000_000),
+        ]);
+        assert_eq!(drafts, ["mtp-Mellum-BF16"]);
+        assert_eq!(quants.len(), 6, "{quants:?}");
+        assert!(quants.contains(&"mtp/Mellum-MTP-Q4_K_M".to_string()));
+    }
+
+    #[test]
+    fn a_draft_in_a_folder_of_its_kind_named_for_its_mate_is_a_draft_while_a_sliver_of_it() {
+        let (quants, drafts) = split(&[
+            ("Model-Q8_0", 8 * GB),
+            ("MTP/mtp-Model-Q8_0", 900_000_000),
+            ("MTP/Model-MTP-Q8_0", 3 * GB),
+        ]);
+        assert_eq!(quants, ["Model-Q8_0"]);
+        assert_eq!(drafts, ["MTP/Model-MTP-Q8_0", "MTP/mtp-Model-Q8_0"]);
+    }
+
+    // Found on the real catalog: three repositories offered their importance matrix as their one model,
+    // the real weights being parts and the matrix the largest whole file.
+    #[test]
+    fn an_importance_matrix_beside_weights_that_are_all_parts_is_not_offered_as_a_model() {
+        let (quants, _) = split(&[
+            ("imatrix", 580_000_000),
+            ("Model-Q4_K_M-00001-of-00004", 12 * GB),
+            ("Model-Q4_K_M-00002-of-00004", 12 * GB),
+        ]);
+        assert!(quants.is_empty(), "{quants:?}");
+        // The same file beside a whole model is no model either, and a model that only carries the word is.
+        let (quants, _) = split(&[
+            ("imatrix", 580_000_000),
+            ("Model-Q4_K_M", 12 * GB),
+            ("Model-imatrix-Q8", 11 * GB),
+        ]);
+        assert_eq!(quants, ["Model-Q4_K_M", "Model-imatrix-Q8"]);
+    }
+
+    #[test]
+    fn a_path_that_leaves_the_commit_is_not_offered() {
+        let bad = [
+            "../../../other/repo/resolve/main/evil",
+            "a/../b",
+            "./a",
+            "a//b",
+            "/abs",
+            "a\\b",
+            "a\u{7}b",
+        ];
+        let mut tree: Vec<TreeEntry> = bad
+            .iter()
+            .map(|p| file(&format!("{p}.gguf"), 2 * GB, Some(OID)))
+            .collect();
+        tree.push(file("fine/Model-Q4.gguf", 2 * GB, Some(OID)));
+        let found = classify("o/r", "rev", &tree);
+        let ids: Vec<_> = found.quants.iter().map(|f| f.model_id.as_str()).collect();
+        assert_eq!(ids, ["fine/Model-Q4"]);
     }
 }

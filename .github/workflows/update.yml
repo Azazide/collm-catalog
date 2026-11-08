@@ -22,17 +22,26 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      # Actions are pinned to a commit, not a tag a maintainer can move. The token is not left in the
+      # checkout: the one step that pushes is given it, and no step that builds code has it.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
 
       # A broken generator must not publish a catalog.
       - name: Test
         run: cargo test --locked
 
-      # Exit code 2 means the new catalog is far smaller than the last: the job fails and nothing is pushed.
-      # Unchanged repositories are carried over, so a change to the rules reaches them only on a full
-      # read: on request, and every Sunday.
+      # Built in a step of its own, with no secret: the build scripts of the dependencies run here.
+      - name: Build
+        run: cargo build --release --locked
+
+      # Exit code 2 means the new catalog is far smaller than the last, or has fewer than 200 models: the
+      # job fails and nothing is pushed. Unchanged repositories are carried over; a change to the rules
+      # (`RULES` in model.rs) makes the program read every one again by itself, and so does a run on
+      # request and every Sunday.
       - name: Build the catalog
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
@@ -40,9 +49,11 @@ jobs:
         run: |
           flags=""
           if [ "$REFRESH" = "true" ] || [ "$(date -u +%u)" = "7" ]; then flags="--refresh"; fi
-          cargo run --release --locked -- --out catalog.json $flags
+          ./target/release/collm-catalog --out catalog.json $flags
 
       - name: Commit the change
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           if [ -z "$(git status --porcelain -- catalog.json)" ]; then
             echo "The catalog has not changed."
@@ -52,4 +63,4 @@ jobs:
           git config user.email "catalog@users.noreply.github.com"
           git add catalog.json
           git commit -m "Update catalog"
-          git push
+          git push "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" HEAD:main

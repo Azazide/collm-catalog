@@ -4,7 +4,9 @@
 
 use collm_catalog::assemble::{Stats, build};
 use collm_catalog::hf::{Hf, HfError, ListPage, Repo, TreeEntry};
-use collm_catalog::model::{Catalog, FORMAT, Model, check_shrink, render};
+use collm_catalog::model::{
+    Catalog, FORMAT, File, Model, RULES, check_floor, check_shrink, render,
+};
 use collm_catalog::select::{Curated, Reason};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -549,7 +551,7 @@ fn without_a_readme_the_description_names_the_base_model_and_there_is_no_readme_
 fn the_file_is_one_model_per_line_reads_back_the_same_and_is_the_same_every_time() {
     let (catalog, _, _) = run(&Fake::recorded(), &Curated::default(), &Catalog::empty());
     let text = render(&catalog);
-    assert!(text.starts_with("{\"format\":1,\"models\":[\n"));
+    assert!(text.starts_with(&format!("{{\"format\":1,\"rules\":{RULES},\"models\":[\n")));
     assert!(text.ends_with("]}\n"));
     assert_eq!(text.lines().count(), catalog.models.len() + 2);
     assert_eq!(Catalog::from_text(&text), catalog);
@@ -866,4 +868,220 @@ fn the_service_files_of_a_repository_are_left_out_and_a_repository_of_nothing_el
         .collect();
     assert_eq!(ids, ["Model-Q4_K_M", "Model-BF16"]);
     assert_eq!(stats.rejected.get(&Reason::NoWholeFile), Some(&1));
+}
+
+#[test]
+fn a_catalog_made_under_other_rules_is_read_again_and_one_made_under_these_is_carried_over() {
+    let (catalog, _, _) = run(&Fake::recorded(), &Curated::default(), &Catalog::empty());
+    assert_eq!(catalog.rules, RULES);
+    assert_eq!(catalog.carried(false), catalog);
+    assert!(catalog.carried(true).models.is_empty(), "by request");
+    // A file with no `rules` (made before there were any) and one of an older version.
+    let old =
+        Catalog::from_text(&render(&catalog).replace(&format!("\"rules\":{RULES}"), "\"rules\":1"));
+    assert_eq!(old.rules, 1);
+    assert!(old.carried(false).models.is_empty());
+    let none = Catalog::from_text(&render(&catalog).replace(&format!("\"rules\":{RULES},"), ""));
+    assert_eq!(none.rules, 0);
+    assert!(none.carried(false).models.is_empty());
+    assert_eq!(
+        none.models.len(),
+        catalog.models.len(),
+        "the models themselves still read"
+    );
+}
+
+#[test]
+fn a_catalog_below_the_floor_is_a_failed_run_whatever_the_last_one_held() {
+    assert!(check_floor(199, 200).is_err());
+    assert!(check_floor(200, 200).is_ok());
+    // The shrink guard alone: 300 -> 213 -> 151 -> 107 -> 75 -> 53, each night under a third, five nights.
+    let mut count = 300usize;
+    let mut nights_passed = 0;
+    while check_shrink(count, count * 71 / 100, 0.7).is_ok()
+        && check_floor(count * 71 / 100, 200).is_ok()
+    {
+        count = count * 71 / 100;
+        nights_passed += 1;
+    }
+    assert!(
+        nights_passed <= 1,
+        "{nights_passed} nights of losses passed the guards"
+    );
+}
+
+const SHA: &str = "0123456789abcdef0123456789abcdef01234567";
+const HASH: &str = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
+
+fn good_file(name: &str) -> File {
+    File {
+        model_id: name.into(),
+        path: format!("https://huggingface.co/o/m/resolve/{SHA}/{name}.gguf"),
+        size: 4_000_000_000,
+        sha256: Some(HASH.into()),
+    }
+}
+
+fn good_model() -> Model {
+    Model {
+        model_name: "o/m".into(),
+        developer: "o".into(),
+        sha: SHA.into(),
+        description: String::new(),
+        downloads: 1,
+        likes: 0,
+        created_at: None,
+        updated_at: None,
+        license: None,
+        pipeline_tag: None,
+        architecture: "llama".into(),
+        context_length: None,
+        capabilities: vec![],
+        readme: format!("https://huggingface.co/o/m/resolve/{SHA}/README.md"),
+        quants: vec![good_file("m-Q4")],
+        drafts: vec![good_file("mtp-m")],
+        mmproj_models: vec![good_file("mmproj-m")],
+    }
+}
+
+#[test]
+fn a_well_formed_model_has_no_problem_and_each_malformation_is_named_and_dropped() {
+    assert_eq!(good_model().problems(), Vec::<String>::new());
+    type Damage = Box<dyn Fn(&mut Model)>;
+    let cases: Vec<(&str, Damage)> = vec![
+        (
+            "not owner/name",
+            Box::new(|m| m.model_name = "justaname".into()),
+        ),
+        (
+            "not owner/name",
+            Box::new(|m| m.model_name = "a/b/c".into()),
+        ),
+        (
+            "not owner/name",
+            Box::new(|m| m.model_name = "o/../x".into()),
+        ),
+        (
+            "not owner/name",
+            Box::new(|m| m.model_name = "o/m x".into()),
+        ),
+        ("owner", Box::new(|m| m.developer = "someone".into())),
+        ("40-digit", Box::new(|m| m.sha = "main".into())),
+        ("40-digit", Box::new(|m| m.sha = "abc".into())),
+        ("no file to download", Box::new(|m| m.quants.clear())),
+        ("no size", Box::new(|m| m.quants[0].size = 0)),
+        ("no SHA-256", Box::new(|m| m.quants[0].sha256 = None)),
+        (
+            "no SHA-256",
+            Box::new(|m| m.quants[0].sha256 = Some("zz".into())),
+        ),
+        (
+            "not under",
+            Box::new(|m| m.quants[0].path = "https://attacker.example/m.gguf".into()),
+        ),
+        (
+            "not under",
+            Box::new(|m| {
+                m.drafts[0].path = "https://huggingface.co/o/m/resolve/main/mtp-m.gguf".to_string()
+            }),
+        ),
+        (
+            "not under",
+            Box::new(|m| {
+                m.mmproj_models[0].path = format!("https://huggingface.co/x/y/resolve/{SHA}/p.gguf")
+            }),
+        ),
+        (
+            "leaves the commit",
+            Box::new(|m| {
+                m.quants[0].path = format!(
+                    "https://huggingface.co/o/m/resolve/{SHA}/../../../x/y/resolve/main/e.gguf"
+                )
+            }),
+        ),
+        (
+            "leaves the commit",
+            Box::new(|m| {
+                m.quants[0].path = format!("https://huggingface.co/o/m/resolve/{SHA}/a//b.gguf")
+            }),
+        ),
+        (
+            "leaves the commit",
+            Box::new(|m| {
+                m.quants[0].path = format!("https://huggingface.co/o/m/resolve/{SHA}/%2e%2e/b.gguf")
+            }),
+        ),
+        (
+            "README",
+            Box::new(|m| m.readme = "https://huggingface.co/o/m/resolve/main/README.md".into()),
+        ),
+    ];
+    for (needle, damage) in &cases {
+        let mut model = good_model();
+        damage(&mut model);
+        let problems = model.problems();
+        assert!(
+            problems.iter().any(|p| p.contains(needle)),
+            "{needle}: {problems:?}"
+        );
+        let mut catalog = Catalog {
+            format: FORMAT,
+            rules: RULES,
+            models: vec![good_model(), model],
+        };
+        catalog.models[0].model_name = "p/ok".into();
+        catalog.models[0].developer = "p".into();
+        catalog.models[0].quants = vec![File {
+            path: format!("https://huggingface.co/p/ok/resolve/{SHA}/m-Q4.gguf"),
+            ..good_file("m-Q4")
+        }];
+        catalog.models[0].drafts.clear();
+        catalog.models[0].mmproj_models.clear();
+        catalog.models[0].readme.clear();
+        let dropped = catalog.drop_malformed();
+        assert_eq!(dropped.len(), 1, "{needle}");
+        assert_eq!(catalog.models.len(), 1);
+        assert_eq!(catalog.models[0].model_name, "p/ok");
+    }
+}
+
+#[test]
+fn a_model_listed_twice_under_names_that_differ_in_case_is_listed_once() {
+    let mut twin = good_model();
+    twin.model_name = "O/M".into();
+    twin.developer = "O".into();
+    twin.quants[0].path = format!("https://huggingface.co/O/M/resolve/{SHA}/m-Q4.gguf");
+    twin.drafts.clear();
+    twin.mmproj_models.clear();
+    twin.readme.clear();
+    let mut catalog = Catalog {
+        format: FORMAT,
+        rules: RULES,
+        models: vec![good_model(), twin],
+    };
+    let dropped = catalog.drop_malformed();
+    assert_eq!(dropped.len(), 1);
+    assert!(dropped[0].1.iter().any(|p| p.contains("twice")));
+    assert_eq!(catalog.models.len(), 1);
+}
+
+#[test]
+fn a_template_that_only_mentions_tools_in_a_comment_or_in_its_text_is_not_a_tools_model() {
+    let fake = synthetic(vec![
+        bare(
+            "a/real",
+            &[],
+            "llama",
+            Some("{%- if tools %}{{ tools | tojson }}{%- endif %}{{ messages }}"),
+        ),
+        bare(
+            "b/says-no",
+            &[],
+            "llama",
+            Some("{# tools #}{{ messages }} This model does not support tools."),
+        ),
+    ]);
+    let (catalog, _, _) = run(&fake, &Curated::default(), &Catalog::empty());
+    assert_eq!(find(&catalog, "a/real").capabilities, ["tools"]);
+    assert!(find(&catalog, "b/says-no").capabilities.is_empty());
 }

@@ -6,12 +6,16 @@
 
 use collm_catalog::assemble::build;
 use collm_catalog::hf::HttpHf;
-use collm_catalog::model::{Catalog, check_shrink, render};
+use collm_catalog::model::{Catalog, RULES, check_floor, check_shrink, render};
 use collm_catalog::select::Curated;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 const KEEP_RATIO: f64 = 0.7;
+
+/// A run that gives fewer models than this has failed, whatever the last catalog held (a good run gives
+/// about 390).
+const MIN_MODELS: usize = 200;
 
 #[derive(Debug)]
 struct Args {
@@ -100,13 +104,17 @@ fn main() -> ExitCode {
     eprintln!("last catalog: {} models", previous.models.len());
 
     let hf = HttpHf::new(std::env::var("HF_TOKEN").ok());
-    // `--refresh` reads every repository again; the shrink guard below still measures against the file.
-    let carried = if args.refresh {
-        Catalog::empty()
-    } else {
-        previous.clone()
-    };
-    let (catalog, stats) = match build(&hf, &curated, &carried, &mut |line| eprintln!("{line}")) {
+    // `--refresh` reads every repository again, and so does a catalog made under other rules (an entry
+    // carried over is not redone); the shrink guard below still measures against the file.
+    if !args.refresh && previous.rules != RULES {
+        eprintln!(
+            "the last catalog was made under rules {}, these are {RULES}: reading every repository again",
+            previous.rules
+        );
+    }
+    let carried = previous.carried(args.refresh);
+    let (mut catalog, stats) = match build(&hf, &curated, &carried, &mut |line| eprintln!("{line}"))
+    {
         Ok(done) => done,
         Err(e) => {
             eprintln!("error: {e}");
@@ -128,6 +136,15 @@ fn main() -> ExitCode {
         eprintln!("  left out {count}: {}", reason.text());
     }
 
+    for (name, problems) in catalog.drop_malformed() {
+        eprintln!("left out {name}: {}", problems.join("; "));
+    }
+    if !args.force
+        && let Err(why) = check_floor(catalog.models.len(), MIN_MODELS)
+    {
+        eprintln!("refused: {why}");
+        return ExitCode::from(2);
+    }
     if !args.force
         && let Err(why) = check_shrink(previous.models.len(), catalog.models.len(), KEEP_RATIO)
     {

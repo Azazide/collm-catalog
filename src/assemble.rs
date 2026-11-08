@@ -11,7 +11,7 @@ use crate::classify::{self, Signals};
 use crate::describe;
 use crate::files;
 use crate::hf::{Hf, HfError, Repo};
-use crate::model::{Catalog, FORMAT, Model};
+use crate::model::{Catalog, FORMAT, Model, RULES};
 use crate::select::{self, Curated, Reason};
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 
@@ -167,6 +167,7 @@ pub fn build(
     Ok((
         Catalog {
             format: FORMAT,
+            rules: RULES,
             models,
         },
         stats,
@@ -228,7 +229,7 @@ fn process(
         (template, architecture, gguf.context_length)
     };
     // Unknown, not false, when the metadata was a projector's.
-    let tools = (!projector).then(|| template.contains("tools"));
+    let tools = (!projector).then(|| classify::template_takes_tools(&template));
     let rev = detail.sha.clone().unwrap_or_else(|| listed_sha.to_string());
     let Some((developer, _)) = select::split_id(&detail.id) else {
         return Ok(Outcome::Rejected(Reason::ExcludedName));
@@ -265,8 +266,12 @@ fn process(
             likes: detail.likes,
             created_at: detail.created_at.clone(),
             updated_at: detail.last_modified.clone(),
-            license: detail.card_data.as_ref().and_then(|c| c.license()),
-            pipeline_tag: detail.pipeline_tag.clone(),
+            license: detail
+                .card_data
+                .as_ref()
+                .and_then(|c| c.license())
+                .and_then(|l| describe::label(&l)),
+            pipeline_tag: detail.pipeline_tag.as_deref().and_then(describe::label),
             architecture,
             context_length,
             capabilities: classify::capabilities(&Signals {

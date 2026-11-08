@@ -52,6 +52,51 @@ const TOOL_TAGS: &[&str] = &[
 ];
 const AGENT_TAGS: &[&str] = &["agent", "agents", "agentic"];
 const AGENT_WORDS: &[&str] = &["agent", "agents", "agentic"];
+/// Whether a chat template (Jinja) takes a list of tools: `tools` as a whole word inside a `{{ … }}` or
+/// `{% … %}`, where a template uses it. The word in a comment (`{# … #}`) or in the plain text between
+/// (a template that says it does not support tools) is no use of it.
+pub fn template_takes_tools(template: &str) -> bool {
+    let mut rest = template;
+    while let Some(open) = rest.find('{') {
+        let after = &rest[open + 1..];
+        let (close, from) = match after.as_bytes().first() {
+            Some(b'{') => ("}}", 1),
+            Some(b'%') => ("%}", 1),
+            Some(b'#') => {
+                // A comment: skipped whole.
+                match after.find("#}") {
+                    Some(end) => {
+                        rest = &after[end + 2..];
+                        continue;
+                    }
+                    None => return false,
+                }
+            }
+            _ => {
+                rest = after;
+                continue;
+            }
+        };
+        let body = &after[from..];
+        let end = body.find(close).unwrap_or(body.len());
+        if names_word(&body[..end], TOOLS) {
+            return true;
+        }
+        rest = &body[end..];
+    }
+    false
+}
+
+/// Whether `word` stands in `text` as a whole word (not inside `tools_list` or `mytools`).
+fn names_word(text: &str, word: &str) -> bool {
+    text.match_indices(word).any(|(at, _)| {
+        let before = text[..at].chars().next_back();
+        let after = text[at + word.len()..].chars().next();
+        let part = |c: Option<char>| c.is_some_and(|c| c.is_alphanumeric() || c == '_');
+        !part(before) && !part(after)
+    })
+}
+
 /// How often a README must speak of agents and tools before it counts as putting the model forward.
 const README_MENTIONS: usize = 3;
 const README_PHRASES: &[&str] = &["agent", "tool call", "function call", "tool use"];
@@ -299,5 +344,32 @@ mod tests {
         sorted.sort();
         sorted.dedup();
         assert_eq!(got, sorted);
+    }
+
+    #[test]
+    fn a_template_takes_tools_only_where_it_uses_the_list() {
+        for takes in [
+            "{%- if tools %}\n{{ tools | tojson }}{%- endif %}",
+            "{{- bos_token }}{%- if tools is defined and tools is not none %}x{% endif %}",
+            "{% for tool in tools %}{{ tool.name }}{% endfor %}",
+            "{%-if tools-%}",
+        ] {
+            assert!(template_takes_tools(takes), "{takes}");
+        }
+        for takes_none in [
+            "",
+            "{{ messages }} This model does not support tools.",
+            "{# tools are not supported #}{{ messages }}",
+            "{% set tools_list = [] %}{{ mytools }}{{ tools_x }}",
+            "{{ messages }}{",
+            "{{ messages }} tools",
+            "{# never closed tools",
+        ] {
+            assert!(!template_takes_tools(takes_none), "{takes_none}");
+        }
+        // Past a comment and a plain block, a later use is still found.
+        assert!(template_takes_tools(
+            "{# tools #}{% set a = 1 %}text {%- if tools %}x{% endif %}"
+        ));
     }
 }
