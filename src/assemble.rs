@@ -60,6 +60,11 @@ pub fn build(
     let mut models: Vec<Model> = Vec::new();
     let mut queue: VecDeque<Repo> = VecDeque::new();
     let mut notes: HashMap<String, String> = HashMap::new();
+    // Pinned repositories are on top of the limits: `max_models` and `max_candidates` are about what
+    // the list gives, so pinning a model never costs the catalog one that is not pinned.
+    let pinned: HashSet<String> = curated.pinned.iter().map(|id| id.to_lowercase()).collect();
+    let mut taken = 0usize;
+    let mut looked_into = 0usize;
 
     for id in &curated.pinned {
         match hf.repo(id) {
@@ -82,7 +87,7 @@ pub fn build(
     let mut pages = 0;
     let mut list_done = false;
     loop {
-        if models.len() >= curated.max_models || stats.examined >= curated.max_candidates {
+        if taken >= curated.max_models || looked_into >= curated.max_candidates {
             break;
         }
         let repo = match queue.pop_front() {
@@ -111,9 +116,14 @@ pub fn build(
         }
         seen.insert(key.clone());
         stats.examined += 1;
+        let is_pinned = pinned.contains(&key);
+        if !is_pinned {
+            looked_into += 1;
+        }
         match process(hf, curated, &repo, before.get(&key).copied()) {
             Ok(Outcome::Reused(model)) => {
                 stats.reused += 1;
+                taken += usize::from(!is_pinned);
                 models.push(model);
             }
             Ok(Outcome::Fetched { model, note }) => {
@@ -121,10 +131,14 @@ pub fn build(
                 if let Some(note) = note {
                     notes.insert(key.clone(), note);
                 }
+                taken += usize::from(!is_pinned);
+                let place = if is_pinned {
+                    "pinned".to_string()
+                } else {
+                    format!("{taken}/{}", curated.max_models)
+                };
                 log(format!(
-                    "[{}/{}] read {}: {} files, {} projectors",
-                    models.len() + 1,
-                    curated.max_models,
+                    "[{place}] read {}: {} files, {} projectors",
                     repo.id,
                     model.quants.len(),
                     model.mmproj_models.len()
@@ -139,6 +153,7 @@ pub fn build(
                 match before.get(&key) {
                     Some(old) => {
                         stats.kept_after_error += 1;
+                        taken += usize::from(!is_pinned);
                         models.push((*old).clone());
                     }
                     None => stats.failed += 1,

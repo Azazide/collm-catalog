@@ -26,7 +26,8 @@ repository is listed when
   skipped, and a repository that has only those is left out; so is one whose only whole files are
   drafts (below).
 
-`curated.toml` holds the choices a person makes: the size limit, repositories that are always listed,
+`curated.toml` holds the choices a person makes: the size limit, repositories that are always listed
+(on top of the limit, so a pinned model never takes the place of one that is not),
 and owners, names and architectures that never are. An unknown key in it is an error.
 
 ## The file

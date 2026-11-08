@@ -358,7 +358,79 @@ fn the_catalog_stops_at_max_models_and_pinned_repositories_come_first() {
         ..Curated::default()
     };
     let (first, _, _) = run(&Fake::recorded(), &pinned, &Catalog::empty());
-    assert_eq!(names(&first), [GEMMA]);
+    assert_eq!(
+        names(&first),
+        [GEMMA, QWEN],
+        "the pinned one and, on top of it, the one the limit of 1 allows from the list"
+    );
+}
+
+#[test]
+fn a_pinned_model_never_takes_the_place_of_one_that_is_not_pinned() {
+    let fake = Fake::recorded();
+    // One from the list and the pinned one: the pinned one is not one of the one.
+    let curated = Curated {
+        max_models: 1,
+        pinned: vec![GEMMA.into()],
+        ..Curated::default()
+    };
+    let (catalog, stats, _) = run(&fake, &curated, &Catalog::empty());
+    assert_eq!(names(&catalog), [GEMMA, QWEN]);
+    assert_eq!(stats.fetched, 2);
+
+    // It does not use up the candidates the run may look into either: two others come before the
+    // third in the list (a repository of no known kind, and one with no data of its own), so the list
+    // needs all three, and a pinned one that took one of them would leave the list short.
+    let candidates = Curated {
+        max_candidates: 3,
+        pinned: vec![GEMMA.into()],
+        ..Curated::default()
+    };
+    let (catalog, _, _) = run(&Fake::recorded(), &candidates, &Catalog::empty());
+    assert!(
+        names(&catalog).contains(&QWEN.to_string()),
+        "the three candidates the list is given still go to the list: {:?}",
+        names(&catalog)
+    );
+}
+
+#[test]
+fn a_pinned_model_that_is_gated_is_left_out_without_costing_the_list_a_place() {
+    let fake = Fake::recorded();
+    let curated = Curated {
+        max_models: 1,
+        pinned: vec![GATED.into()],
+        ..Curated::default()
+    };
+    let (catalog, stats, _) = run(&fake, &curated, &Catalog::empty());
+    assert_eq!(names(&catalog), [QWEN]);
+    assert!(stats.rejected.get(&Reason::Gated).copied().unwrap_or(0) >= 1);
+}
+
+#[test]
+fn many_pinned_models_come_in_whole_beside_the_list() {
+    let mut fake = Fake::recorded();
+    let ids: Vec<String> = (0..5).map(|n| format!("pin/model-{n}")).collect();
+    for id in &ids {
+        let repo = bare(id, &[], "llama", Some("{{ messages }}"));
+        fake.trees.insert(id.clone(), fake.trees[GEMMA].clone());
+        fake.details.insert(id.clone(), repo);
+    }
+    let curated = Curated {
+        max_models: 1,
+        pinned: ids.clone(),
+        ..Curated::default()
+    };
+    let (catalog, _, _) = run(&fake, &curated, &Catalog::empty());
+    assert_eq!(
+        catalog.models.len(),
+        6,
+        "five pinned and one from the list: {:?}",
+        names(&catalog)
+    );
+    for id in &ids {
+        assert!(names(&catalog).contains(id));
+    }
 }
 
 #[test]

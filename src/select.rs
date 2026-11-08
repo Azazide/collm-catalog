@@ -19,7 +19,8 @@ pub struct Curated {
     pub max_candidates: usize,
     #[serde(default = "default_max_list_pages")]
     pub max_list_pages: usize,
-    /// Listed first, whatever their downloads (`owner/name`).
+    /// Listed first, whatever their downloads (`owner/name`), and on top of `max_models`: a pinned
+    /// model never takes the place of one that is not.
     #[serde(default)]
     pub pinned: Vec<String>,
     /// Owners whose repositories are never listed.
@@ -275,6 +276,24 @@ mod tests {
             ..GgufInfo::default()
         });
         assert_eq!(prefilter(&c, &clip), Ok(()));
+    }
+
+    #[test]
+    fn the_curated_file_of_this_repository_reads_and_pins_each_model_once() {
+        let text =
+            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/curated.toml")).unwrap();
+        let curated = Curated::parse(&text).expect("the file the nightly run reads must parse");
+        assert_eq!(curated.max_models, 300);
+        let mut seen = std::collections::HashSet::new();
+        for id in &curated.pinned {
+            assert!(split_id(id).is_some(), "{id} is not owner/name");
+            assert!(seen.insert(id.to_lowercase()), "{id} is pinned twice");
+        }
+        assert!(
+            curated.pinned.len() >= 100,
+            "the pinned models are read: {}",
+            curated.pinned.len()
+        );
     }
 
     #[test]
