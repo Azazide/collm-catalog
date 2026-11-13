@@ -51,16 +51,30 @@ jobs:
           if [ "$REFRESH" = "true" ] || [ "$(date -u +%u)" = "7" ]; then flags="--refresh"; fi
           ./target/release/collm-catalog --out catalog.json $flags
 
+      # The MLX build's catalog, from mlx.toml. A failed run leaves the last mlx.json as it was and does not stop the
+      # GGUF catalog from being published.
+      - name: Build the MLX catalog
+        id: mlx
+        continue-on-error: true
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          REFRESH: ${{ inputs.refresh }}
+        run: |
+          flags=""
+          if [ "$REFRESH" = "true" ] || [ "$(date -u +%u)" = "7" ]; then flags="--refresh"; fi
+          ./target/release/collm-catalog --engine mlx --out mlx.json $flags
+
       - name: Commit the change
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
-          if [ -z "$(git status --porcelain -- catalog.json)" ]; then
+          if [ -z "$(git status --porcelain -- catalog.json mlx.json)" ]; then
             echo "The catalog has not changed."
             exit 0
           fi
           git config user.name "collm-catalog"
           git config user.email "catalog@users.noreply.github.com"
           git add catalog.json
+          [ ! -f mlx.json ] || git add mlx.json
           git commit -m "Update catalog"
           git push "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" HEAD:main
