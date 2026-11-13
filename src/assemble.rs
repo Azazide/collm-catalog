@@ -60,6 +60,7 @@ pub fn build(
     let mut models: Vec<Model> = Vec::new();
     let mut queue: VecDeque<Repo> = VecDeque::new();
     let mut notes: HashMap<String, String> = HashMap::new();
+    let claims = classify::MakerClaims::default();
     // Pinned repositories are on top of the limits: `max_models` and `max_candidates` are about what
     // the list gives, so pinning a model never costs the catalog one that is not pinned.
     let pinned: HashSet<String> = curated.pinned.iter().map(|id| id.to_lowercase()).collect();
@@ -120,7 +121,7 @@ pub fn build(
         if !is_pinned {
             looked_into += 1;
         }
-        match process(hf, curated, &repo, before.get(&key).copied()) {
+        match process(hf, curated, &claims, &repo, before.get(&key).copied()) {
             Ok(Outcome::Reused(model)) => {
                 stats.reused += 1;
                 taken += usize::from(!is_pinned);
@@ -177,6 +178,7 @@ pub fn build(
 fn process(
     hf: &dyn Hf,
     curated: &Curated,
+    claims: &classify::MakerClaims,
     repo: &Repo,
     old: Option<&Model>,
 ) -> Result<Outcome, HfError> {
@@ -289,6 +291,7 @@ fn process(
                 tools,
                 has_projector: !found.mmproj.is_empty(),
                 readme: readme.as_deref(),
+                maker_says_agent: tools != Some(false) && claims.says_agent(hf, &detail.tags),
             }),
             readme: readme
                 .map(|_| {

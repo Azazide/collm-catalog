@@ -115,7 +115,7 @@ It has the same fields as above (`description`, `downloads`, `likes`, `base_mode
 - `video`: GGUF only. It has a projector and is labelled as taking video (`video-text-to-text`, a `video` or `omni` tag, or such a word in its name).
 - `tools`: its chat template uses a list of tools. When the template is unknown, a tag such as `function-calling` or `tool-use` stands in.
 - `code`: made for programming, by its name, tags or the model it was made from (`coder`, `devstral`, …).
-- `agent`: put forward for agents by its tags, its name or its README, and its template takes tools. This is narrower than `tools`.
+- `agent`: put forward for agents by its tags, its name or its README, and its template takes tools. This is narrower than `tools`. A quantization (`base_model:quantized:…`) also counts as put forward when the README of the model it quantizes does so, because a converter's card says nothing about what the model is for. A fine-tune or a merge does not inherit this.
 
 The MLX engine takes text and pictures only, so `mlx.json` never has `audio` or `video`.
 

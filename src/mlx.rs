@@ -26,7 +26,7 @@ pub const FORMAT: u32 = 1;
 pub const ENGINE: &str = "mlx";
 /// The version of the rules an entry was made under (see `model::RULES`); a change reads every
 /// repository again.
-pub const RULES: u32 = 4;
+pub const RULES: u32 = 5;
 
 /// Whether a README's first statement is only what a conversion tool or a quantizer's card writes about every model it
 /// makes ("… was converted to MLX format from … using mlx-lm", "Model creator: … Original model: …"): it says nothing
@@ -436,6 +436,7 @@ pub fn build(
     let mut seen: HashSet<String> = HashSet::new();
     let mut models: Vec<MlxModel> = Vec::new();
     let mut notes: HashMap<String, String> = HashMap::new();
+    let claims = classify::MakerClaims::default();
     let mut queue: VecDeque<Repo> = VecDeque::new();
     let (mut taken, mut looked_into) = (0usize, 0usize);
 
@@ -491,7 +492,7 @@ pub fn build(
         if !is_pinned {
             looked_into += 1;
         }
-        match process(hf, curated, &repo, before.get(&key).copied()) {
+        match process(hf, curated, &claims, &repo, before.get(&key).copied()) {
             Ok(Outcome::Reused(model)) => {
                 stats.reused += 1;
                 taken += usize::from(!is_pinned);
@@ -556,7 +557,7 @@ pub fn build(
                 continue;
             }
             stats.examined += 1;
-            match process(hf, curated, &repo, before.get(&key).copied()) {
+            match process(hf, curated, &claims, &repo, before.get(&key).copied()) {
                 Ok(Outcome::Reused(model)) => {
                     stats.reused += 1;
                     siblings += 1;
@@ -622,7 +623,13 @@ fn hex(bytes: &[u8]) -> String {
     Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect()
 }
 
-fn process(hf: &dyn Hf, curated: &MlxCurated, repo: &Repo, old: Option<&MlxModel>) -> Result<Outcome, HfError> {
+fn process(
+    hf: &dyn Hf,
+    curated: &MlxCurated,
+    claims: &classify::MakerClaims,
+    repo: &Repo,
+    old: Option<&MlxModel>,
+) -> Result<Outcome, HfError> {
     let Some(rev) = repo.sha.clone() else {
         return Ok(Outcome::Rejected(Reason::NoCommit));
     };
@@ -781,14 +788,16 @@ fn process(hf: &dyn Hf, curated: &MlxCurated, repo: &Repo, old: Option<&MlxModel
             context_length: context_of(&config),
             bits,
             capabilities: {
+                let tools = classify::template_takes_tools(&template);
                 let mut found = classify::capabilities(&Signals {
                     id,
                     tags: &repo.tags,
                     pipeline_tag: repo.pipeline_tag.as_deref(),
-                    tools: Some(classify::template_takes_tools(&template)),
+                    tools: Some(tools),
                     // Sound and video are never offered: the engine takes text and pictures. Vision is the folder's.
                     has_projector: false,
                     readme: readme.as_deref(),
+                    maker_says_agent: tools && claims.says_agent(hf, &repo.tags),
                 });
                 if vision {
                     found.push(classify::VISION.to_string());
@@ -837,6 +846,8 @@ mod tests {
         unlisted: Vec<Repo>,
         files: HashMap<(String, String), Vec<u8>>,
         lfs: HashMap<(String, String), (u64, String)>,
+        /// READMEs by repository; any other has a plain one.
+        readmes: HashMap<String, String>,
         asked: RefCell<Vec<String>>,
     }
 
@@ -902,8 +913,11 @@ mod tests {
             out.push(TreeEntry { kind: "file".into(), path: "sub/model.safetensors".into(), size: Some(5), lfs: None });
             Ok(out)
         }
-        fn readme(&self, _: &str, _: &str) -> Result<Option<String>, HfError> {
-            Ok(Some("# A model\n\nA small model that answers questions about the weather in plain words.\n".into()))
+        fn readme(&self, id: &str, _: &str) -> Result<Option<String>, HfError> {
+            self.asked.borrow_mut().push(format!("readme {id}"));
+            Ok(Some(self.readmes.get(id).cloned().unwrap_or_else(|| {
+                "# A model\n\nA small model that answers questions about the weather in plain words.\n".into()
+            })))
         }
         fn small_file(&self, id: &str, _: &str, path: &str, limit: u64) -> Result<Option<Vec<u8>>, HfError> {
             self.asked.borrow_mut().push(format!("file {id} {path}"));
@@ -1187,6 +1201,34 @@ mod tests {
         assert_eq!(catalog.models[2].bits, Some(4));
         assert!(fake.asked.borrow().contains(&"search o Big".to_string()), "{:?}", fake.asked.borrow());
         assert_eq!(stats.rejected.get(&Reason::UnsupportedQuantization).copied(), Some(1));
+    }
+
+    #[test]
+    fn a_conversion_is_an_agent_when_the_readme_of_the_model_it_quantizes_says_so() {
+        let cfg = config(",\"quantization\":{\"group_size\":64,\"bits\":4}");
+        let tok = tokenizer_config();
+        let folder = [("config.json", cfg.as_str()), ("tokenizer_config.json", tok.as_str()), ("tokenizer.json", "{}")];
+        let mut fake = Fake::default()
+            .with("conv/Helper-30B-4bit", "qwen3", &folder, &["model.safetensors"])
+            .with("conv/Helper-30B-8bit", "qwen3", &folder, &["model.safetensors"])
+            .with("tune/Helper-30B-Tuned-4bit", "qwen3", &folder, &["model.safetensors"]);
+        let quantized = vec!["base_model:quantized:Maker/Helper-30B".to_string()];
+        fake.repos[0].tags = quantized.clone();
+        fake.repos[1].tags = quantized;
+        fake.repos[2].tags = vec!["base_model:finetune:Maker/Helper-30B".to_string()];
+        fake.readmes.insert(
+            "Maker/Helper-30B".into(),
+            "# Helper-30B\n\nAgentic coding: it does tool calling and function calling for agents.\n".into(),
+        );
+
+        let (catalog, _) = run(&fake);
+
+        let caps = |id: &str| catalog.models.iter().find(|m| m.model_name == id).unwrap().capabilities.clone();
+        assert_eq!(caps("conv/Helper-30B-4bit"), ["agent", "tools"], "the converter's card says nothing; the maker's does");
+        assert_eq!(caps("conv/Helper-30B-8bit"), ["agent", "tools"]);
+        assert_eq!(caps("tune/Helper-30B-Tuned-4bit"), ["tools"], "a fine-tune is another model");
+        let reads = fake.asked.borrow().iter().filter(|a| *a == "readme Maker/Helper-30B").count();
+        assert_eq!(reads, 1, "one read for every quantization");
     }
 
     #[test]

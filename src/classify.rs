@@ -18,7 +18,10 @@
 //!   `encoder`), its tags, or the name of the model it was made from.
 //! - `agent`: its tags, its name or its README put it forward for agents and tool use, and its
 //!   template, when known, takes tools. Most models take tools, so this is the narrower claim: the
-//!   author says it is meant for agents.
+//!   author says it is meant for agents. A quantization is the same model at another precision, so the
+//!   README of the repository it quantizes (`base_model:quantized:`) speaks for it too: a converter's card
+//!   ("converted to MLX with mlx-lm") says nothing of what the model is for, and the maker's does
+//!   ([`MakerClaims`]). A fine-tune or a merge is another model and does not inherit the claim.
 //!
 //! "Agent and coding" is both flags at once; "chat" is every model, so it has no flag.
 
@@ -28,6 +31,10 @@ pub const VIDEO: &str = "video";
 pub const TOOLS: &str = "tools";
 pub const CODE: &str = "code";
 pub const AGENT: &str = "agent";
+
+use crate::hf::Hf;
+use std::cell::RefCell;
+use std::collections::HashMap;
 
 const CODE_TAGS: &[&str] = &[
     "code",
@@ -126,6 +133,9 @@ pub struct Signals<'a> {
     pub tools: Option<bool>,
     pub has_projector: bool,
     pub readme: Option<&'a str>,
+    /// Whether the README of the repository this one quantizes puts the model forward for agents
+    /// ([`MakerClaims::says_agent`]).
+    pub maker_says_agent: bool,
 }
 
 /// Whole words of a name: `Qwen3-Coder-30B` gives `qwen3`, `coder`, `30b`; `encoder` stays one word.
@@ -152,6 +162,40 @@ fn names(signals: &Signals) -> Vec<String> {
 fn has_tag(tags: &[String], wanted: &[&str]) -> bool {
     tags.iter()
         .any(|t| wanted.contains(&t.to_lowercase().as_str()))
+}
+
+/// Whether a README puts its model forward for agents and tool use.
+fn puts_forward_for_agents(readme: &str) -> bool {
+    mentions(readme) >= README_MENTIONS
+}
+
+/// What the makers' READMEs say, read once per maker's repository in a run: many quantizations share one.
+#[derive(Default)]
+pub struct MakerClaims {
+    known: RefCell<HashMap<String, bool>>,
+}
+
+impl MakerClaims {
+    /// Whether the README of the repository `tags` say this one quantizes puts the model forward for agents. A
+    /// repository with no such tag, a README that is missing or cannot be read (a gated maker) is no claim; a failed
+    /// read is not remembered, so the next quantization of the same model asks again.
+    pub fn says_agent(&self, hf: &dyn Hf, tags: &[String]) -> bool {
+        let Some(maker) = crate::describe::quantized_from(tags) else {
+            return false;
+        };
+        let key = maker.to_lowercase();
+        if let Some(known) = self.known.borrow().get(&key) {
+            return *known;
+        }
+        match hf.readme(&maker, "main") {
+            Ok(readme) => {
+                let says = readme.as_deref().is_some_and(puts_forward_for_agents);
+                self.known.borrow_mut().insert(key, says);
+                says
+            }
+            Err(_) => false,
+        }
+    }
 }
 
 fn mentions(readme: &str) -> usize {
@@ -202,9 +246,8 @@ pub fn capabilities(signals: &Signals) -> Vec<String> {
     let put_forward = has_tag(signals.tags, AGENT_TAGS)
         || tool_tag
         || names.iter().any(|w| AGENT_WORDS.contains(&w.as_str()))
-        || signals
-            .readme
-            .is_some_and(|r| mentions(r) >= README_MENTIONS);
+        || signals.readme.is_some_and(puts_forward_for_agents)
+        || signals.maker_says_agent;
     if put_forward && signals.tools != Some(false) {
         found.push(AGENT);
     }
@@ -247,6 +290,7 @@ mod tests {
             tools,
             has_projector: projector,
             readme,
+            maker_says_agent: false,
         })
     }
 
@@ -345,6 +389,21 @@ mod tests {
             [TOOLS],
             "two mentions are not enough"
         );
+    }
+
+    #[test]
+    fn the_maker_s_word_makes_an_agent_of_a_quantization_only_when_its_template_takes_tools() {
+        let signals = |tools| Signals {
+            id: "o/m-GGUF",
+            tags: &[],
+            pipeline_tag: None,
+            tools,
+            has_projector: false,
+            readme: Some("Run it with llama.cpp."),
+            maker_says_agent: true,
+        };
+        assert_eq!(capabilities(&signals(Some(true))), [AGENT, TOOLS]);
+        assert!(capabilities(&signals(Some(false))).is_empty());
     }
 
     #[test]

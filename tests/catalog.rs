@@ -548,6 +548,33 @@ fn without_a_readme_the_description_names_the_base_model_and_there_is_no_readme_
 }
 
 #[test]
+fn a_quantization_is_an_agent_when_its_maker_s_readme_says_so_read_once_for_all_its_quantizations() {
+    let tools = Some("{% if tools %}x{% endif %}");
+    let maker = ["base_model:Maker/Helper-30B", "base_model:quantized:Maker/Helper-30B"];
+    let tuned = ["base_model:finetune:Maker/Helper-30B"];
+    let mut fake = synthetic(vec![
+        bare("a/Helper-30B-GGUF", &maker, "llama", tools),
+        bare("b/Helper-30B-GGUF", &maker, "llama", tools),
+        bare("c/Helper-30B-tune-GGUF", &tuned, "llama", tools),
+        bare("d/Helper-30B-GGUF", &maker, "llama", Some("{{ messages }}")),
+    ]);
+    readme_for(&mut fake, "a/Helper-30B-GGUF", "# Helper\n\nRun it with llama.cpp.\n");
+    readme_for(
+        &mut fake,
+        "Maker/Helper-30B",
+        "# Helper-30B\n\nAgentic coding: it does tool calling and function calling for agents.\n",
+    );
+
+    let (catalog, _, _) = run(&fake, &Curated::default(), &Catalog::empty());
+
+    assert_eq!(find(&catalog, "a/Helper-30B-GGUF").capabilities, ["agent", "tools"], "its own README says nothing");
+    assert_eq!(find(&catalog, "b/Helper-30B-GGUF").capabilities, ["agent", "tools"]);
+    assert_eq!(find(&catalog, "c/Helper-30B-tune-GGUF").capabilities, ["tools"], "a fine-tune is another model");
+    assert!(find(&catalog, "d/Helper-30B-GGUF").capabilities.is_empty(), "no tools, no agent");
+    assert_eq!(fake.called("readme:Maker/"), ["readme:Maker/Helper-30B"], "one read for every quantization");
+}
+
+#[test]
 fn the_file_is_one_model_per_line_reads_back_the_same_and_is_the_same_every_time() {
     let (catalog, _, _) = run(&Fake::recorded(), &Curated::default(), &Catalog::empty());
     let text = render(&catalog);

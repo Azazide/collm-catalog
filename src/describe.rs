@@ -309,6 +309,14 @@ pub fn base_model(tags: &[String]) -> Option<String> {
         .map(str::to_string)
 }
 
+/// The repository this one quantizes (`base_model:quantized:owner/name`): the same model at another precision, whose
+/// README is its maker's.
+pub fn quantized_from(tags: &[String]) -> Option<String> {
+    tags.iter()
+        .find_map(|t| t.strip_prefix("base_model:quantized:").filter(|rest| crate::model::is_repo_id(rest)))
+        .map(str::to_string)
+}
+
 pub fn base_model_note(tags: &[String]) -> Option<String> {
     let of = |prefix: &str| {
         tags.iter().find_map(|t| {
