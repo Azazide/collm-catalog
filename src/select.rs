@@ -88,6 +88,12 @@ pub enum Reason {
     NoWholeFile,
     OnlyDrafts,
     BigEndian,
+    /// MLX: a file the folder needs is not there (the configuration, a tokenizer, a part of the weights).
+    MissingFiles,
+    /// MLX: the weights are quantized in a way the engine does not read.
+    UnsupportedQuantization,
+    /// MLX: the whole folder is larger than the catalog offers.
+    TooLarge,
 }
 
 impl Reason {
@@ -109,6 +115,9 @@ impl Reason {
             Reason::NoWholeFile => "no weights file is whole (all are cut into parts)",
             Reason::OnlyDrafts => "the only whole files are drafts for speculative decoding",
             Reason::BigEndian => "its files are byte-swapped for a big-endian machine (IBM Z)",
+            Reason::MissingFiles => "a file the model folder needs is missing (configuration, tokenizer or a part of the weights)",
+            Reason::UnsupportedQuantization => "its weights are quantized in a way the engine does not read",
+            Reason::TooLarge => "the model is larger than the catalog offers",
         }
     }
 }

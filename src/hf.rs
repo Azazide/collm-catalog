@@ -73,6 +73,13 @@ impl CardData {
     }
 }
 
+/// What Hugging Face reads from a repository's `config.json` (asked for in the MLX list).
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct RepoConfig {
+    #[serde(default)]
+    pub model_type: Option<String>,
+}
+
 /// A repository as the list and the single-repository answer both describe it.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct Repo {
@@ -101,6 +108,9 @@ pub struct Repo {
     pub gguf: Option<GgufInfo>,
     #[serde(default, rename = "cardData")]
     pub card_data: Option<CardData>,
+    /// Only the MLX list asks for it.
+    #[serde(default)]
+    pub config: Option<RepoConfig>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -141,12 +151,27 @@ pub trait Hf {
     fn tree(&self, id: &str, rev: &str) -> Result<Vec<TreeEntry>, HfError>;
     /// The start of the README at `rev`; `None` when there is none.
     fn readme(&self, id: &str, rev: &str) -> Result<Option<String>, HfError>;
+    /// The first page of MLX chat repositories by downloads, or the page `cursor` names.
+    fn mlx_list_page(&self, _cursor: Option<&str>) -> Result<ListPage, HfError> {
+        Err(HfError("this source has no MLX list".into()))
+    }
+    /// One repository as the MLX list describes it.
+    fn mlx_repo(&self, id: &str) -> Result<Repo, HfError> {
+        Err(HfError(format!("this source has no MLX repository {id}")))
+    }
+    /// A small file of the repository at `rev` (a configuration, a tokenizer's text), whole: `None` when
+    /// there is none, an error when it is larger than `limit` bytes.
+    fn small_file(&self, id: &str, _rev: &str, path: &str, _limit: u64) -> Result<Option<Vec<u8>>, HfError> {
+        Err(HfError(format!("this source has no file {path} of {id}")))
+    }
 }
 
 const API: &str = "https://huggingface.co/api/models";
 const EXPAND: &str = "expand[]=gguf&expand[]=cardData&expand[]=likes&expand[]=downloads\
 &expand[]=createdAt&expand[]=lastModified&expand[]=sha&expand[]=pipeline_tag&expand[]=tags\
 &expand[]=gated&expand[]=disabled&expand[]=private";
+/// The MLX list also asks for what Hugging Face reads from `config.json` (the architecture).
+const MLX_EXPAND: &str = "expand[]=config";
 const PAGE_SIZE: usize = 1000;
 /// A README is read for its first paragraph; more than this is never needed and never wanted.
 const README_LIMIT: u64 = 200_000;
@@ -296,32 +321,35 @@ fn trusted_api_link(url: &str) -> bool {
 
 impl Hf for HttpHf {
     fn list_page(&self, cursor: Option<&str>) -> Result<ListPage, HfError> {
-        let url = match cursor {
-            Some(next) if trusted_api_link(next) => next.to_string(),
-            Some(other) => return Err(HfError(format!("not following {other}"))),
-            None => {
-                format!("{API}?filter=gguf&sort=downloads&direction=-1&limit={PAGE_SIZE}&{EXPAND}")
-            }
-        };
-        let reply = self.get(&url, BODY_LIMIT)?;
-        if reply.status != 200 {
-            return Err(HfError(format!("{url}: HTTP {}", reply.status)));
+        self.page(
+            cursor,
+            &format!("{API}?filter=gguf&sort=downloads&direction=-1&limit={PAGE_SIZE}&{EXPAND}"),
+        )
+    }
+
+    fn mlx_list_page(&self, cursor: Option<&str>) -> Result<ListPage, HfError> {
+        self.page(
+            cursor,
+            &format!(
+                "{API}?filter=mlx&pipeline_tag=text-generation&sort=downloads&direction=-1&limit={PAGE_SIZE}&{EXPAND}&{MLX_EXPAND}"
+            ),
+        )
+    }
+
+    fn mlx_repo(&self, id: &str) -> Result<Repo, HfError> {
+        self.json(&format!("{API}/{}?{EXPAND}&{MLX_EXPAND}", encode_path(id)))
+    }
+
+    fn small_file(&self, id: &str, rev: &str, path: &str, limit: u64) -> Result<Option<Vec<u8>>, HfError> {
+        let url = format!("https://huggingface.co/{}/resolve/{rev}/{}", encode_path(id), encode_path(path));
+        // One byte more than allowed tells a file that is too large from one that is exactly the limit.
+        let reply = self.get(&url, limit + 1)?;
+        match reply.status {
+            200 if reply.body.len() as u64 > limit => Err(HfError(format!("{url}: larger than {limit} bytes"))),
+            200 => Ok(Some(reply.body)),
+            404 => Ok(None),
+            other => Err(HfError(format!("{url}: HTTP {other}"))),
         }
-        let items: Vec<serde_json::Value> =
-            serde_json::from_slice(&reply.body).map_err(|e| HfError(format!("{url}: {e}")))?;
-        let mut repos = Vec::with_capacity(items.len());
-        let mut skipped = 0;
-        for item in items {
-            match serde_json::from_value::<Repo>(item) {
-                Ok(repo) => repos.push(repo),
-                Err(_) => skipped += 1,
-            }
-        }
-        Ok(ListPage {
-            repos,
-            next: reply.link.as_deref().and_then(next_link),
-            skipped,
-        })
     }
 
     fn repo(&self, id: &str) -> Result<Repo, HfError> {
@@ -360,6 +388,36 @@ impl Hf for HttpHf {
             404 => Ok(None),
             other => Err(HfError(format!("{url}: HTTP {other}"))),
         }
+    }
+}
+
+impl HttpHf {
+    /// A page of a list: the first one at `first`, or the one `cursor` names (on Hugging Face only).
+    fn page(&self, cursor: Option<&str>, first: &str) -> Result<ListPage, HfError> {
+        let url = match cursor {
+            Some(next) if trusted_api_link(next) => next.to_string(),
+            Some(other) => return Err(HfError(format!("not following {other}"))),
+            None => first.to_string(),
+        };
+        let reply = self.get(&url, BODY_LIMIT)?;
+        if reply.status != 200 {
+            return Err(HfError(format!("{url}: HTTP {}", reply.status)));
+        }
+        let items: Vec<serde_json::Value> =
+            serde_json::from_slice(&reply.body).map_err(|e| HfError(format!("{url}: {e}")))?;
+        let mut repos = Vec::with_capacity(items.len());
+        let mut skipped = 0;
+        for item in items {
+            match serde_json::from_value::<Repo>(item) {
+                Ok(repo) => repos.push(repo),
+                Err(_) => skipped += 1,
+            }
+        }
+        Ok(ListPage {
+            repos,
+            next: reply.link.as_deref().and_then(next_link),
+            skipped,
+        })
     }
 }
 

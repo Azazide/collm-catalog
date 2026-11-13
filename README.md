@@ -103,6 +103,38 @@ word elsewhere in its name that is under a tenth of the file it is named after (
 `Model-Q8_0`), or of the largest file when no file is. Most files that carry the word elsewhere are models
 made with the head kept in them: they weigh what the same model weighs, and they are models.
 
+## The MLX catalog
+
+[`mlx.json`](mlx.json), beside it, is the catalog of Collm's MLX build, which runs models in Apple's MLX format
+instead of GGUF. Each build reads only its own file: the ordinary one `catalog.json`, the MLX one `mlx.json`, from
+
+```
+https://raw.githubusercontent.com/Azazide/collm-catalog/main/mlx.json
+```
+
+An MLX model is a folder, not one file, so an entry lists every file of it, and the app downloads them all into one
+model. A repository is listed when
+
+- it is tagged `mlx` and labelled `text-generation` on Hugging Face, and anyone can download it;
+- its architecture (`model_type` in `config.json`) is one the engine loads: `model_types` in `mlx.toml`, the
+  architectures of the mlx-swift-lm version the app is pinned to;
+- its weights are unquantized or quantized the way the engine reads (affine, a bit width of `bits` in `mlx.toml`);
+- its folder is whole: `config.json`, a tokenizer, and every part of the weights their index names;
+- it has a chat template (in `tokenizer_config.json`, or a `chat_template.jinja` or `chat_template.json`).
+
+The file is `{"format":1,"engine":"mlx","rules":1,"models":[…]}`, one model per line. A model has the fields of the
+GGUF catalog that apply (`model_name`, `developer`, `sha`, `description`, `downloads`, `likes`, the dates, `license`,
+`pipeline_tag`, `architecture`, `context_length`, `capabilities`, `readme`), and
+
+| field | |
+|---|---|
+| `bits` | the bit width of quantized weights; left out for unquantized ones |
+| `size` | the whole folder, in bytes |
+| `files` | every file of the folder at the top of the repository that a model folder holds (the weights, their index, the configuration, the tokenizer's files): `{name, path, size, sha256}`. A file kept in LFS has the SHA-256 Hugging Face states; a small one kept in git is read and hashed by the program |
+
+A vision tower in the folder is not offered as `vision`: the engine reads text. Run it with
+`collm-catalog --engine mlx` (it writes `mlx.json` from `mlx.toml`); the other flags are the same.
+
 ## Running it
 
 ```bash

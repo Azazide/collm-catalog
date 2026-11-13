@@ -1,11 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-//! `collm-catalog [--out catalog.json] [--curated curated.toml] [--force] [--refresh]`
+//! `collm-catalog [--engine gguf|mlx] [--out FILE] [--curated FILE] [--force] [--refresh]`
+//!
+//! `--engine gguf` (the default) builds `catalog.json` from `curated.toml`; `--engine mlx` builds `mlx.json`, the
+//! catalog of Collm's MLX build, from `mlx.toml`. Each build of the app reads only its own file.
 //!
 //! Exit 0: the file is written. Exit 1: the run failed and the file is untouched. Exit 2: the run
 //! produced a catalog much smaller than the last one and the file is untouched (`--force` writes it).
 
 use collm_catalog::assemble::build;
 use collm_catalog::hf::HttpHf;
+use collm_catalog::mlx::{self, MlxCatalog, MlxCurated};
 use collm_catalog::model::{Catalog, RULES, check_floor, check_shrink, render};
 use collm_catalog::select::Curated;
 use std::path::{Path, PathBuf};
@@ -16,9 +20,18 @@ const KEEP_RATIO: f64 = 0.7;
 /// A run that gives fewer models than this has failed, whatever the last catalog held (a good run gives
 /// about 390).
 const MIN_MODELS: usize = 200;
+/// The same for the MLX catalog, whose list is shorter (a good run gives about 300).
+const MIN_MLX_MODELS: usize = 100;
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Engine {
+    Gguf,
+    Mlx,
+}
 
 #[derive(Debug)]
 struct Args {
+    engine: Engine,
     out: PathBuf,
     curated: Option<PathBuf>,
     force: bool,
@@ -27,7 +40,8 @@ struct Args {
 
 fn parse_args(args: &[String]) -> Result<Args, String> {
     let mut parsed = Args {
-        out: PathBuf::from("catalog.json"),
+        engine: Engine::Gguf,
+        out: PathBuf::new(),
         curated: None,
         force: false,
         refresh: false,
@@ -35,6 +49,13 @@ fn parse_args(args: &[String]) -> Result<Args, String> {
     let mut it = args.iter();
     while let Some(arg) = it.next() {
         match arg.as_str() {
+            "--engine" => {
+                parsed.engine = match it.next().map(String::as_str) {
+                    Some("gguf") => Engine::Gguf,
+                    Some("mlx") => Engine::Mlx,
+                    _ => return Err("--engine is gguf or mlx".to_string()),
+                }
+            }
             "--out" => parsed.out = PathBuf::from(it.next().ok_or("--out needs a path")?),
             "--curated" => {
                 parsed.curated = Some(PathBuf::from(it.next().ok_or("--curated needs a path")?))
@@ -44,6 +65,12 @@ fn parse_args(args: &[String]) -> Result<Args, String> {
             "--help" | "-h" => return Err(String::new()),
             other => return Err(format!("unknown argument {other}")),
         }
+    }
+    if parsed.out.as_os_str().is_empty() {
+        parsed.out = PathBuf::from(match parsed.engine {
+            Engine::Gguf => "catalog.json",
+            Engine::Mlx => "mlx.json",
+        });
     }
     Ok(parsed)
 }
@@ -79,7 +106,7 @@ fn main() -> ExitCode {
                 eprintln!("error: {message}");
             }
             eprintln!(
-                "usage: collm-catalog [--out catalog.json] [--curated curated.toml] [--force] [--refresh]"
+                "usage: collm-catalog [--engine gguf|mlx] [--out FILE] [--curated FILE] [--force] [--refresh]"
             );
             eprintln!(
                 "HF_TOKEN in the environment raises Hugging Face's rate limit; it is optional."
@@ -91,6 +118,9 @@ fn main() -> ExitCode {
             };
         }
     };
+    if args.engine == Engine::Mlx {
+        return run_mlx(&args);
+    }
     let curated = match read_curated(args.curated.as_deref()) {
         Ok(curated) => curated,
         Err(message) => {
@@ -163,6 +193,57 @@ fn main() -> ExitCode {
     ExitCode::SUCCESS
 }
 
+/// The MLX catalog's run: as the GGUF one, from `mlx.toml` into `mlx.json`.
+fn run_mlx(args: &Args) -> ExitCode {
+    let path = args.curated.clone().unwrap_or_else(|| PathBuf::from("mlx.toml"));
+    let curated = match std::fs::read_to_string(&path)
+        .map_err(|e| format!("{}: {e}", path.display()))
+        .and_then(|text| MlxCurated::parse(&text))
+    {
+        Ok(curated) => curated,
+        Err(message) => {
+            eprintln!("error: {message}");
+            return ExitCode::from(1);
+        }
+    };
+    let previous = std::fs::read_to_string(&args.out)
+        .map(|text| MlxCatalog::from_text(&text))
+        .unwrap_or_else(|_| MlxCatalog::empty());
+    eprintln!("last MLX catalog: {} models", previous.models.len());
+    let hf = HttpHf::new(std::env::var("HF_TOKEN").ok());
+    let carried = previous.carried(args.refresh);
+    let (mut catalog, stats) = match mlx::build(&hf, &curated, &carried, &mut |line| eprintln!("{line}")) {
+        Ok(done) => done,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return ExitCode::from(1);
+        }
+    };
+    eprintln!(
+        "listed {} (unreadable {}), looked into {}: read {}, reused {}, kept after an error {}, failed {}",
+        stats.listed, stats.unreadable, stats.examined, stats.fetched, stats.reused, stats.kept_after_error, stats.failed
+    );
+    for (reason, count) in &stats.rejected {
+        eprintln!("  left out {count}: {}", reason.text());
+    }
+    for (name, problems) in catalog.drop_malformed() {
+        eprintln!("left out {name}: {}", problems.join("; "));
+    }
+    if !args.force
+        && let Err(why) = check_floor(catalog.models.len(), MIN_MLX_MODELS)
+            .and_then(|()| check_shrink(previous.models.len(), catalog.models.len(), KEEP_RATIO))
+    {
+        eprintln!("refused: {why}");
+        return ExitCode::from(2);
+    }
+    if let Err(e) = write_atomically(&args.out, &mlx::render(&catalog)) {
+        eprintln!("error: {}: {e}", args.out.display());
+        return ExitCode::from(1);
+    }
+    eprintln!("wrote {} models to {}", catalog.models.len(), args.out.display());
+    ExitCode::SUCCESS
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -175,6 +256,10 @@ mod tests {
     fn the_defaults_and_each_flag() {
         let d = parse_args(&args(&[])).unwrap();
         assert_eq!(d.out, PathBuf::from("catalog.json"));
+        assert_eq!(d.engine, Engine::Gguf);
+        let m = parse_args(&args(&["--engine", "mlx"])).unwrap();
+        assert_eq!((m.engine, m.out), (Engine::Mlx, PathBuf::from("mlx.json")));
+        assert!(parse_args(&args(&["--engine", "onnx"])).is_err());
         assert!(d.curated.is_none() && !d.force && !d.refresh);
         let all = parse_args(&args(&[
             "--out",

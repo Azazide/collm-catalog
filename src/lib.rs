@@ -6,5 +6,6 @@ pub mod classify;
 pub mod describe;
 pub mod files;
 pub mod hf;
+pub mod mlx;
 pub mod model;
 pub mod select;

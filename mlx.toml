@@ -1,0 +1,42 @@
+# What the MLX catalog (mlx.json) offers: the choices for Collm's MLX build. What makes a repository an
+# MLX chat model at all is in src/mlx.rs. An unknown key is an error.
+
+# The catalog holds at most this many models, taken by downloads over the last 30 days.
+max_models = 300
+
+# Repositories looked into in one run, at most. A new or changed one costs a few requests (its file
+# tree, its small files, its README).
+max_candidates = 900
+
+# The list is read 1000 repositories at a time, at most this many pages.
+max_list_pages = 3
+
+# The largest model folder offered, in bytes (0: no limit). 256 GB is more than any Mac holds in memory.
+max_bytes = 256_000_000_000
+
+# The architectures (`model_type` in config.json) the engine loads: those mlx-swift-lm 3.32.3, the
+# version Collm's MLX build is pinned to, registers for language models. A version that adds one is
+# the time to add it here.
+model_types = [
+  "acereason", "afmoe", "apertus", "baichuan_m1", "bailing_moe", "bitnet", "cohere", "deepseek_v2",
+  "deepseek_v3", "ernie4_5", "exaone4", "falcon_h1", "gemma", "gemma2", "gemma3", "gemma3_text",
+  "gemma3n", "gemma4", "gemma4_text", "gemma4_unified", "glm4", "glm4_moe", "glm4_moe_lite", "gpt_oss",
+  "granite", "granitemoehybrid", "helium", "hunyuan_v1_dense", "internlm2", "jamba", "lfm2",
+  "lfm2_moe", "llama", "mamba2", "mimo", "mimo_v2_flash", "minicpm", "minimax", "mistral", "mistral3",
+  "mixtral", "nanbeige", "nanochat", "nemotron_h", "olmo2", "olmo3", "olmoe", "openelm", "phi",
+  "phi3", "phimoe", "qwen2", "qwen3", "qwen3_5", "qwen3_5_moe", "qwen3_5_text", "qwen3_moe",
+  "qwen3_next", "smollm3", "starcoder2",
+]
+
+# The bit widths of quantized weights the engine reads (affine quantization); unquantized weights are
+# always read.
+bits = [2, 3, 4, 5, 6, 8]
+
+# Listed first, whatever their downloads, as "owner/name", and on top of max_models.
+pinned = []
+
+# Owners whose repositories are never listed.
+exclude_developers = []
+
+# Repositories whose name holds one of these, in any case, are never listed.
+exclude_name_contains = ["embed", "rerank", "lora", "whisper", "-vae", "eagle", "dflash", "mtp-draft"]
