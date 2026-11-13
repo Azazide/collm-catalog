@@ -159,6 +159,11 @@ pub trait Hf {
     fn mlx_repo(&self, id: &str) -> Result<Repo, HfError> {
         Err(HfError(format!("this source has no MLX repository {id}")))
     }
+    /// The MLX repositories of `author` whose name holds `text` (the other quantizations of a model), as the list
+    /// describes them, by downloads.
+    fn mlx_search(&self, author: &str, _text: &str) -> Result<Vec<Repo>, HfError> {
+        Err(HfError(format!("this source has no search of {author}")))
+    }
     /// A small file of the repository at `rev` (a configuration, a tokenizer's text), whole: `None` when
     /// there is none, an error when it is larger than `limit` bytes.
     fn small_file(&self, id: &str, _rev: &str, path: &str, _limit: u64) -> Result<Option<Vec<u8>>, HfError> {
@@ -338,6 +343,17 @@ impl Hf for HttpHf {
 
     fn mlx_repo(&self, id: &str) -> Result<Repo, HfError> {
         self.json(&format!("{API}/{}?{EXPAND}&{MLX_EXPAND}", encode_path(id)))
+    }
+
+    fn mlx_search(&self, author: &str, text: &str) -> Result<Vec<Repo>, HfError> {
+        let query = |s: &str| encode_path(s).replace('/', "%2F");
+        let url = format!(
+            "{API}?author={}&search={}&filter=mlx&sort=downloads&direction=-1&limit=100&{EXPAND}&{MLX_EXPAND}",
+            query(author),
+            query(text)
+        );
+        let items: Vec<serde_json::Value> = self.json(&url)?;
+        Ok(items.into_iter().filter_map(|item| serde_json::from_value::<Repo>(item).ok()).collect())
     }
 
     fn small_file(&self, id: &str, rev: &str, path: &str, limit: u64) -> Result<Option<Vec<u8>>, HfError> {

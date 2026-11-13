@@ -119,7 +119,8 @@ model. A repository is listed when
   can download it;
 - its architecture (`model_type` in `config.json`) is one the engine loads: `model_types` in `mlx.toml`, the
   architectures of the mlx-swift-lm version the app is pinned to;
-- its weights are unquantized or quantized the way the engine reads (affine, a bit width of `bits` in `mlx.toml`);
+- its weights are unquantized or quantized the way the engine reads (affine at a bit width of `bits` in `mlx.toml`, or
+  the microscaling floats `mxfp4`, `mxfp8` and `nvfp4`);
 - its folder is whole: `config.json`, a tokenizer, and every part of the weights their index names;
 - it has a chat template (in `tokenizer_config.json`, or a `chat_template.jinja` or `chat_template.json`).
 
@@ -132,6 +133,10 @@ GGUF catalog that apply (`model_name`, `developer`, `sha`, `description`, `downl
 | `bits` | the bit width of quantized weights; left out for unquantized ones |
 | `size` | the whole folder, in bytes |
 | `files` | every file of the folder at the top of the repository that a model folder holds (the weights, their index, the configuration, the tokenizer's files): `{name, path, size, sha256}`. A file kept in LFS has the SHA-256 Hugging Face states; a small one kept in git is read and hashed by the program |
+
+The list is cut at `max_models` by downloads, but a model is offered with all its quantizations by its owner: for
+each model taken, the owner's repositories of the same name (`-4bit`, `-8bit`, `-bf16`, `-mxfp4`, …) are searched for
+and judged like any other, up to `max_siblings` more. The app shows them as one model with a variant each.
 
 A description that is only what a conversion tool or a quantizer's card writes of every model it makes ("… was
 converted to MLX format from … using mlx-lm", "Model creator: … Original model: …") gives way to what the model was made

@@ -26,7 +26,7 @@ pub const FORMAT: u32 = 1;
 pub const ENGINE: &str = "mlx";
 /// The version of the rules an entry was made under (see `model::RULES`); a change reads every
 /// repository again.
-pub const RULES: u32 = 3;
+pub const RULES: u32 = 4;
 
 /// Whether a README's first statement is only what a conversion tool or a quantizer's card writes about every model it
 /// makes ("… was converted to MLX format from … using mlx-lm", "Model creator: … Original model: …"): it says nothing
@@ -86,6 +86,9 @@ pub struct MlxCurated {
     /// The bit widths of quantized weights the engine reads (unquantized weights are always read).
     #[serde(default = "default_bits")]
     pub bits: Vec<u64>,
+    /// The other quantizations of the models taken, by their owners, that are added on top of `max_models`, at most.
+    #[serde(default = "default_max_siblings")]
+    pub max_siblings: usize,
     #[serde(default)]
     pub pinned: Vec<String>,
     #[serde(default)]
@@ -102,6 +105,9 @@ fn default_max_candidates() -> usize {
 }
 fn default_max_list_pages() -> usize {
     3
+}
+fn default_max_siblings() -> usize {
+    1200
 }
 fn default_bits() -> Vec<u64> {
     vec![2, 3, 4, 5, 6, 8]
@@ -121,12 +127,56 @@ impl MlxCurated {
     }
 }
 
+/// Whether a part of a repository's name says only how it was quantized or packed (`4bit`, `bf16`, `mlx`, `dwq`,
+/// `gs32`, `q4`, `mxfp4`). The app groups a model's repositories by the same words (`variantFamily`).
+fn is_quant_word(word: &str) -> bool {
+    let w = word.to_ascii_lowercase();
+    let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+    let after = |prefix: &str| w.strip_prefix(prefix).is_some_and(digits);
+    matches!(w.as_str(), "bf16" | "fp16" | "f16" | "fp32" | "mlx" | "dwq" | "mixed")
+        || w.strip_suffix("bits").or_else(|| w.strip_suffix("bit")).is_some_and(digits)
+        || after("gs")
+        || after("q")
+        || after("mxfp")
+        || after("nvfp")
+}
+
+/// A repository's name without its quantization's words at the end: what its quantizations share.
+pub fn family_name(name: &str) -> &str {
+    let mut rest = name;
+    for _ in 0..6 {
+        let Some(at) = rest.rfind(['-', '_']) else { break };
+        let (head, word) = (&rest[..at], &rest[at + 1..]);
+        if is_quant_word(word) {
+            rest = head;
+        } else if matches!(word.to_ascii_lowercase().as_str(), "bit" | "bits")
+            && let Some(before) = head.rfind(['-', '_'])
+            && head[before + 1..].bytes().all(|b| b.is_ascii_digit())
+            && before + 1 < head.len()
+        {
+            rest = &head[..before];
+        } else {
+            break;
+        }
+    }
+    if rest.is_empty() { name } else { rest }
+}
+
+/// The model a repository is a quantization of: its owner and its name without the quantization's words, lowercased.
+pub fn variant_family(repo: &str) -> String {
+    match split_id(repo) {
+        Some((owner, name)) => format!("{owner}/{}", family_name(name)).to_lowercase(),
+        None => repo.to_lowercase(),
+    }
+}
+
 /// The file names of a model folder the app takes (`models/mlx.rs` of Collm says the same): the weights,
 /// their index, the configuration and the tokenizer's files. Anything else in a repository (a README,
 /// pictures, other formats) is not downloaded.
 pub fn wanted(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();
-    lower.ends_with(".safetensors")
+    // A hidden file (`._model.safetensors`, what a Mac's copy leaves beside a file) is never one of them.
+    !lower.starts_with('.') && lower.ends_with(".safetensors")
         || matches!(
             lower.as_str(),
             "config.json"
@@ -469,6 +519,70 @@ pub fn build(
         }
     }
 
+    // A model is offered with all its quantizations by its owner, not only those downloads put in the list: one search
+    // per model for the owner's repositories of the same name, each judged as any other, on top of the limit.
+    let mut families: Vec<(String, String, String)> = Vec::new();
+    for model in &models {
+        let family = variant_family(&model.model_name);
+        if !families.iter().any(|(key, _, _)| key == &family) {
+            if let Some((owner, name)) = split_id(&model.model_name) {
+                families.push((family, owner.to_string(), family_name(name).to_string()));
+            }
+        }
+    }
+    let mut siblings = 0usize;
+    for (family, owner, name) in families {
+        if siblings >= curated.max_siblings {
+            break;
+        }
+        let found = match hf.mlx_search(&owner, &name) {
+            Ok(found) => found,
+            Err(e) => {
+                log(format!("the other quantizations of {owner}/{name}: {e}"));
+                continue;
+            }
+        };
+        for repo in found {
+            let key = repo.id.to_lowercase();
+            if siblings >= curated.max_siblings || seen.contains(&key) || variant_family(&repo.id) != family {
+                continue;
+            }
+            seen.insert(key.clone());
+            if let Err(reason) = prefilter(curated, &repo) {
+                *stats.rejected.entry(reason).or_default() += 1;
+                continue;
+            }
+            stats.examined += 1;
+            match process(hf, curated, &repo, before.get(&key).copied()) {
+                Ok(Outcome::Reused(model)) => {
+                    stats.reused += 1;
+                    siblings += 1;
+                    models.push(model);
+                }
+                Ok(Outcome::Fetched { model, note }) => {
+                    stats.fetched += 1;
+                    siblings += 1;
+                    if let Some(note) = note {
+                        notes.insert(key, note);
+                    }
+                    log(format!("[variant {siblings}] read {}: {} files, {} bytes", repo.id, model.files.len(), model.size));
+                    models.push(model);
+                }
+                Ok(Outcome::Rejected(reason)) => *stats.rejected.entry(reason).or_default() += 1,
+                Err(e) => {
+                    log(format!("{}: {e}", repo.id));
+                    match before.get(&key) {
+                        Some(old) => {
+                            stats.kept_after_error += 1;
+                            models.push((*old).clone());
+                        }
+                        None => stats.failed += 1,
+                    }
+                }
+            }
+        }
+    }
+
     drop_shared_blurbs(&mut models, &notes);
     models.sort_by_key(|m| m.model_name.to_lowercase());
     Ok((MlxCatalog { format: FORMAT, engine: ENGINE.to_string(), rules: RULES, models }, stats))
@@ -570,8 +684,11 @@ fn process(hf: &dyn Hf, curated: &MlxCurated, repo: &Repo, old: Option<&MlxModel
         None => None,
         Some(q) => {
             let mode = q.get("mode").and_then(|m| m.as_str()).unwrap_or("affine");
-            match q.get("bits").and_then(|b| b.as_u64()) {
-                Some(bits) if mode == "affine" && curated.bits.contains(&bits) => Some(bits),
+            match (mode, q.get("bits").and_then(|b| b.as_u64())) {
+                ("affine", Some(bits)) if curated.bits.contains(&bits) => Some(bits),
+                // The engine's microscaling floats (mlx-swift's `QuantizationMode`): their width is the mode's own.
+                ("mxfp4" | "nvfp4", _) => Some(4),
+                ("mxfp8", _) => Some(8),
                 _ => return Ok(Outcome::Rejected(Reason::UnsupportedQuantization)),
             }
         }
@@ -708,6 +825,8 @@ mod tests {
     #[derive(Default)]
     struct Fake {
         repos: Vec<Repo>,
+        /// Repositories the list does not give (too few downloads), found only by a search of their owner.
+        unlisted: Vec<Repo>,
         files: HashMap<(String, String), Vec<u8>>,
         lfs: HashMap<(String, String), (u64, String)>,
         asked: RefCell<Vec<String>>,
@@ -741,7 +860,17 @@ mod tests {
             unreachable!()
         }
         fn mlx_list_page(&self, _: Option<&str>) -> Result<ListPage, HfError> {
-            Ok(ListPage { repos: self.repos.clone(), next: None, skipped: 0 })
+            let listed = self.repos.iter().filter(|r| !self.unlisted.iter().any(|u| u.id == r.id)).cloned().collect();
+            Ok(ListPage { repos: listed, next: None, skipped: 0 })
+        }
+        fn mlx_search(&self, author: &str, text: &str) -> Result<Vec<Repo>, HfError> {
+            self.asked.borrow_mut().push(format!("search {author} {text}"));
+            Ok(self
+                .repos
+                .iter()
+                .filter(|r| r.id.starts_with(&format!("{author}/")) && r.id.to_lowercase().contains(&text.to_lowercase()))
+                .cloned()
+                .collect())
         }
         fn tree(&self, id: &str, _: &str) -> Result<Vec<TreeEntry>, HfError> {
             self.asked.borrow_mut().push(format!("tree {id}"));
@@ -838,7 +967,8 @@ mod tests {
         };
         let gemma = "{\"model_type\":\"gemma9\"}";
         let one_bit = config(",\"quantization\":{\"bits\":1}");
-        let mx = config(",\"quantization\":{\"bits\":4,\"mode\":\"mxfp4\"}");
+        // A mode the engine has no kernel for.
+        let mx = config(",\"quantization\":{\"bits\":4,\"mode\":\"oq\"}");
         let index = "{\"weight_map\":{\"a\":\"model-00001-of-00002.safetensors\",\"b\":\"model-00002-of-00002.safetensors\"}}";
         let plain = config("");
         let fake = Fake::default();
@@ -898,7 +1028,8 @@ mod tests {
         fake.asked.borrow_mut().clear();
         let (again, stats) = build(&fake, &curated(), &first.carried(false), &mut |_| {}).unwrap();
         assert_eq!(stats.reused, 1);
-        assert!(fake.asked.borrow().is_empty(), "{:?}", fake.asked.borrow());
+        // Only the search for the model's other quantizations: nothing of the repository is read again.
+        assert!(fake.asked.borrow().iter().all(|a| a.starts_with("search ")), "{:?}", fake.asked.borrow());
         assert_eq!(again.models, first.models);
         // Another rule version reads it again.
         let mut older = first.clone();
@@ -974,6 +1105,60 @@ mod tests {
         let named = instead_of_blurb(blurb, None);
         assert!(named.contains("Qwen/Qwen3-4B") && !named.contains("mlx-lm"), "{named}");
         assert_eq!(instead_of_blurb("Model creator: Qwen Original model: Qwen3-4B", None), "");
+    }
+
+    #[test]
+    fn a_hidden_file_is_no_file_of_a_model_folder() {
+        assert!(wanted("model.safetensors") && !wanted("._model.safetensors") && !wanted(".config.json"));
+    }
+
+    #[test]
+    fn a_name_loses_only_how_it_was_quantized() {
+        for (name, family) in [
+            ("Qwen3-Coder-Next-MLX-4bit", "Qwen3-Coder-Next"),
+            ("Qwen3-Coder-Next-mxfp4", "Qwen3-Coder-Next"),
+            ("LFM2.5-24B-A2B-MLX-bf16", "LFM2.5-24B-A2B"),
+            ("Model-DWQ-3bit", "Model"),
+            ("Model-6bit-gs32", "Model"),
+            ("Model-4-bit", "Model"),
+            ("gemma-3-270m-it-qat-4bit", "gemma-3-270m-it-qat"),
+            ("Qwen3-Coder-30B-A3B-Instruct", "Qwen3-Coder-30B-A3B-Instruct"),
+            ("MLX", "MLX"),
+        ] {
+            assert_eq!(family_name(name), family, "{name}");
+        }
+        assert_eq!(variant_family("Owner/Qwen3-4B-8bit"), variant_family("owner/qwen3-4b-bf16"));
+    }
+
+    #[test]
+    fn a_model_is_offered_with_its_owner_s_other_quantizations_and_the_engine_s_microscaling_floats() {
+        let tok = tokenizer_config();
+        let affine = |bits: u32| config(&format!(",\"quantization\":{{\"group_size\":64,\"bits\":{bits}}}"));
+        let (four, three) = (affine(4), affine(3));
+        let mx = config(",\"quantization\":{\"group_size\":32,\"bits\":4,\"mode\":\"mxfp4\"}");
+        let odd = config(",\"quantization\":{\"group_size\":32,\"bits\":4,\"mode\":\"oq\"}");
+        let files = |cfg: &str| vec![("config.json", cfg.to_string()), ("tokenizer.json", "{}".to_string()), ("tokenizer_config.json", tok.clone())];
+        let with = |fake: Fake, id: &str, cfg: &str| {
+            let owned = files(cfg);
+            let refs: Vec<(&str, &str)> = owned.iter().map(|(a, b)| (*a, b.as_str())).collect();
+            fake.with(id, "qwen3", &refs, &["model.safetensors"])
+        };
+        let mut fake = with(Fake::default(), "o/Big-4bit", &four);
+        fake = with(fake, "o/Big-3bit", &three);
+        fake = with(fake, "o/Big-mxfp4", &mx);
+        fake = with(fake, "o/Big-q4", &odd);
+        fake = with(fake, "o/Bigger-4bit", &four);
+        fake = with(fake, "x/Big-3bit", &three);
+        let unlisted: Vec<Repo> = fake.repos.iter().filter(|r| r.id != "o/Big-4bit").cloned().collect();
+        fake.unlisted = unlisted;
+        let (catalog, stats) = run(&fake);
+        let names: Vec<&str> = catalog.models.iter().map(|m| m.model_name.as_str()).collect();
+        // The owner's other quantizations of the model, the float one too; not another model of a longer name, not
+        // another owner's, not a mode the engine does not read.
+        assert_eq!(names, ["o/Big-3bit", "o/Big-4bit", "o/Big-mxfp4"], "{stats:?}");
+        assert_eq!(catalog.models[2].bits, Some(4));
+        assert!(fake.asked.borrow().contains(&"search o Big".to_string()), "{:?}", fake.asked.borrow());
+        assert_eq!(stats.rejected.get(&Reason::UnsupportedQuantization).copied(), Some(1));
     }
 
     #[test]
