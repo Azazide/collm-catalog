@@ -294,6 +294,21 @@ fn names_a_file_or_a_command_or_points_around(text: &str, lower: &str) -> bool {
 }
 
 /// What the tags say a repository was made from: `base_model:quantized:owner/name`.
+/// The repository a model was made from, as its tags say: the one it quantizes, else the one it fine-tunes, else the
+/// one a merge includes, else a plain `base_model:owner/name`. Its owner is the model's maker (`google`, `openai`),
+/// which the one who quantized it is not: the app finds a model by it.
+pub fn base_model(tags: &[String]) -> Option<String> {
+    ["base_model:quantized:", "base_model:finetune:", "base_model:merge:", "base_model:"]
+        .iter()
+        .find_map(|prefix| {
+            tags.iter().find_map(|t| {
+                t.strip_prefix(prefix)
+                    .filter(|rest| crate::model::is_repo_id(rest))
+            })
+        })
+        .map(str::to_string)
+}
+
 pub fn base_model_note(tags: &[String]) -> Option<String> {
     let of = |prefix: &str| {
         tags.iter().find_map(|t| {
@@ -985,4 +1000,20 @@ mod tests {
         let late = format!("{}\nbyte-swapped", "x ".repeat(2_000));
         assert!(!is_big_endian_build("o/Model-BE-GGUF", &late));
     }
+
+    #[test]
+    fn the_base_model_is_the_quantized_one_then_the_fine_tuned_one_then_a_merge_then_a_plain_tag() {
+        let tags = |list: &[&str]| list.iter().map(|t| t.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            base_model(&tags(&["gguf", "base_model:Qwen/Qwen3.6-35B-A3B", "base_model:quantized:Qwen/Qwen3.6-35B-A3B"])).as_deref(),
+            Some("Qwen/Qwen3.6-35B-A3B")
+        );
+        assert_eq!(
+            base_model(&tags(&["base_model:merge:a/M", "base_model:finetune:google/gemma-4-31B-it"])).as_deref(),
+            Some("google/gemma-4-31B-it")
+        );
+        assert_eq!(base_model(&tags(&["base_model:openai/gpt-oss-20b"])).as_deref(), Some("openai/gpt-oss-20b"));
+        assert_eq!(base_model(&tags(&["base_model:not a repo", "license:mit"])), None);
+    }
+
 }

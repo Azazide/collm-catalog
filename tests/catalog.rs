@@ -924,6 +924,7 @@ fn good_file(name: &str) -> File {
 
 fn good_model() -> Model {
     Model {
+        base_model: None,
         model_name: "o/m".into(),
         developer: "o".into(),
         sha: SHA.into(),

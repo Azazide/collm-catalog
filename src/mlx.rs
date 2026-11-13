@@ -227,6 +227,9 @@ pub struct MlxModel {
     pub license: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pipeline_tag: Option<String>,
+    /// The repository the model was made from (`describe::base_model`): the app finds a model by its maker with it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_model: Option<String>,
     /// `model_type` of `config.json`.
     pub architecture: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -630,6 +633,10 @@ fn process(hf: &dyn Hf, curated: &MlxCurated, repo: &Repo, old: Option<&MlxModel
         let mut model = old.clone();
         model.downloads = repo.downloads;
         model.likes = repo.likes;
+        // The list's tags are this commit's: an entry made before the field had it gets it without being read again.
+        if let Some(base) = describe::base_model(&repo.tags) {
+            model.base_model = Some(base);
+        }
         return Ok(Outcome::Reused(model));
     }
     let Some((developer, _)) = split_id(&repo.id) else {
@@ -760,6 +767,7 @@ fn process(hf: &dyn Hf, curated: &MlxCurated, repo: &Repo, old: Option<&MlxModel
     Ok(Outcome::Fetched {
         model: MlxModel {
             model_name: repo.id.clone(),
+            base_model: describe::base_model(&repo.tags),
             developer: developer.to_string(),
             sha: rev.clone(),
             description,
@@ -1014,6 +1022,25 @@ mod tests {
         assert_eq!(stats.rejected.get(&Reason::NotAChatPipeline).copied(), Some(1));
     }
 
+    // "google" found no Gemma: the one who quantized a model is not its maker; the repository it was made from is.
+    #[test]
+    fn an_entry_names_the_repository_it_was_made_from_and_an_unchanged_one_gets_it_from_the_list() {
+        let plain = config("");
+        let files: &[(&str, &str)] = &[("config.json", &plain), ("tokenizer.json", "{}"), ("chat_template.jinja", TEMPLATE)];
+        let mut fake = Fake::default().with("o/Gemma-4bit", "qwen3", files, &["model.safetensors"]);
+        fake.repos[0].tags = vec!["base_model:google/gemma-4-26B-A4B-it".into(), "base_model:quantized:google/gemma-4-26B-A4B-it".into()];
+        let (first, _) = run(&fake);
+        assert_eq!(first.models[0].base_model.as_deref(), Some("google/gemma-4-26B-A4B-it"));
+        assert!(render(&first).contains(r#""base_model":"google/gemma-4-26B-A4B-it""#));
+        // An entry carried from a catalog made before the field: the list's tags fill it, nothing is read again.
+        let mut older = first.clone();
+        older.models[0].base_model = None;
+        fake.asked.borrow_mut().clear();
+        let (again, stats) = build(&fake, &curated(), &older.carried(false), &mut |_| {}).unwrap();
+        assert_eq!(stats.reused, 1);
+        assert_eq!(again.models[0].base_model.as_deref(), Some("google/gemma-4-26B-A4B-it"));
+    }
+
     #[test]
     fn a_template_of_its_own_file_counts_and_an_unchanged_repository_costs_no_request() {
         let plain = config("");
@@ -1047,6 +1074,7 @@ mod tests {
         };
         let good = MlxModel {
             model_name: "o/m".into(),
+            base_model: None,
             developer: "o".into(),
             sha: SHA.into(),
             description: String::new(),

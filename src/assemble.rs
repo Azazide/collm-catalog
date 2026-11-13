@@ -190,6 +190,10 @@ fn process(
         let mut model = old.clone();
         model.downloads = repo.downloads;
         model.likes = repo.likes;
+        // The list's tags are this commit's: an entry made before the field had it gets it without being read again.
+        if let Some(base) = describe::base_model(&repo.tags) {
+            model.base_model = Some(base);
+        }
         return Ok(Outcome::Reused(model));
     }
 
@@ -262,6 +266,7 @@ fn process(
     Ok(Outcome::Fetched {
         model: Model {
             model_name: detail.id.clone(),
+            base_model: describe::base_model(&detail.tags),
             developer: developer.to_string(),
             sha: rev.clone(),
             description,

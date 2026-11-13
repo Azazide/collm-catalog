@@ -97,6 +97,9 @@ pub struct Model {
     pub license: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pipeline_tag: Option<String>,
+    /// The repository the model was made from (`describe::base_model`): the app finds a model by its maker with it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_model: Option<String>,
     pub architecture: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_length: Option<u64>,

@@ -1,191 +1,169 @@
 # collm-catalog
 
-The list of models [Collm](https://github.com/Azazide/Collm) offers for download, as one file:
-[`catalog.json`](catalog.json). A program in this repository builds it from the
-[Hugging Face](https://huggingface.co) API and a workflow runs it every night. Collm reads the file
-from
+Two JSON files that list local LLMs worth downloading, built from [Hugging Face](https://huggingface.co) and refreshed every night.
+
+| File | For | Models |
+|---|---|---|
+| [`catalog.json`](catalog.json) | GGUF models, run by [llama.cpp](https://github.com/ggml-org/llama.cpp) | 390 |
+| [`mlx.json`](mlx.json) | MLX models, run on Apple Silicon | 1125 |
+
+Both are public data. Read them straight from GitHub:
 
 ```
 https://raw.githubusercontent.com/Azazide/collm-catalog/main/catalog.json
+https://raw.githubusercontent.com/Azazide/collm-catalog/main/mlx.json
 ```
 
-Nothing else is needed to use the catalog: it is public data, the program is only how it is made.
+A desktop app reads them, and each build of it reads only the file for its own engine. Nothing stops you from using them for anything else.
 
-## What is in the catalog
+## What you get
 
-GGUF chat models, at most 300, taken from Hugging Face by downloads over the last 30 days. A
-repository is listed when
-
-- anyone can download it (not gated, not private, not disabled);
-- Hugging Face does not label it as speech, image, video or another non-chat kind;
-- its GGUF metadata carries a chat template (a model with no template is not a chat model). Hugging
-  Face reads that metadata from the repository's first file alphabetically, which is often a vision
-  projector (`mmproj-…`, architecture `clip`); then the metadata says nothing of the model and only a
-  chat label such as `text-generation` or `image-text-to-text` vouches for it;
-- not a build for a big-endian machine: `BE` as a word of its name and a README that says its files are
-  byte-swapped or for IBM Z (those do not load on a Mac);
-- at least one weights file is whole and runs on its own. A file cut into `-00001-of-00003` parts is
-  skipped, and a repository that has only those is left out; so is one whose only whole files are
-  drafts (below).
-
-`curated.toml` holds the choices a person makes: the size limit, repositories that are always listed
-(on top of the limit, so a pinned model never takes the place of one that is not),
-and owners, names and architectures that never are. An unknown key in it is an error.
-
-## The file
+Every file looks the same: a small header, then one model per line, sorted by owner and name, so a night's change reads as a clean diff.
 
 ```json
 {"format":1,"rules":3,"models":[
-{"model_name":"gemma-4-12b-it-GGUF","developer":"unsloth","sha":"fc034cf…","description":"…", …},
+{"model_name":"owner/name", …},
 …
 ]}
 ```
 
-One model per line, sorted by owner and name, so a day's change reads as a diff. `format` changes
-when a field is renamed or changes meaning; a reader that does not know it should refuse the file.
-`rules` is the version of the rules the entries were made under (what counts as a model, a draft, a
-description); the program reads every repository again when it differs, and a reader may ignore it.
+- `format` changes when a field is renamed or changes meaning. A reader that does not know it should refuse the file.
+- `rules` is the version of the selection rules the entries were made under. You can ignore it.
+- `mlx.json` also has `"engine":"mlx"`, so a reader can tell the two files apart.
+- Every download address is pinned to a commit (`…/resolve/<40-digit sha>/<file>`), so a later push to a repository cannot break a download.
+- Every file has its size in bytes and its SHA-256, so a download can be checked. A file with no known SHA-256 is not offered.
 
-| field | |
+### `catalog.json` (GGUF)
+
+Chat models only, at most 300 by downloads over the last 30 days, plus a hand-picked list.
+
+```json
+{
+  "model_name": "agentionai/Qwen3.8-27B-AP-GGUF",
+  "developer": "agentionai",
+  "sha": "2c387d95ea40…",
+  "description": "Every 27B quant gives something up. …",
+  "downloads": 924346,
+  "likes": 103,
+  "license": "apache-2.0",
+  "pipeline_tag": "image-text-to-text",
+  "architecture": "qwen35",
+  "context_length": 262144,
+  "capabilities": ["agent", "tools", "vision"],
+  "readme": "…",
+  "quants": [
+    { "model_id": "Qwen3.8-27B-AP-IQ2_S",
+      "path": "https://huggingface.co/agentionai/Qwen3.8-27B-AP-GGUF/resolve/2c387d95ea40…/Qwen3.8-27B-AP-IQ2_S.gguf",
+      "size": 9607980896, "sha256": "daf741050fd1…" }
+  ],
+  "mmproj_models": [ { "model_id": "mmproj-BF16", … } ],
+  "drafts": []
+}
+```
+
+| Field | Meaning |
 |---|---|
-| `model_name`, `developer` | the repository as `owner/name`, which two owners cannot share, and its owner |
-| `sha` | the commit every address below points at; a later push to the repository cannot make a download fail its hash |
-| `description` | the first paragraph of the README that reads as a statement about a model, not a heading, list, table, bar of links, slogan or a blurb that opens the README of three or more repositories; failing that, which model it was made from; left out if neither |
+| `model_name`, `developer` | the repository as `owner/name`, and its owner |
+| `sha` | the commit every address points at |
+| `description` | the first paragraph of the README that reads as a real description, or a note on what the model was made from; left out if neither exists |
+| `base_model` | the repository it was made from (`owner/name`), taken from its `base_model` tags; left out if there is none |
 | `downloads`, `likes` | as Hugging Face counts them (downloads over 30 days) |
-| `created_at`, `updated_at`, `license`, `pipeline_tag` | from the repository, left out when it has none |
-| `architecture`, `context_length` | from the GGUF header; empty (`architecture`) and left out (`context_length`) when Hugging Face read a projector's instead |
-| `capabilities` | what the model can do, sorted: `vision`, `audio`, `video`, `tools`, `code`, `agent` (see below) |
-| `readme` | the README at `sha`, left out when there is none |
-| `quants` | every whole weights file that runs on its own, smallest first: `{model_id, path, size, sha256}` |
-| `drafts` | the drafts for speculative decoding (`mtp`, `dspark`, `dflash`, `eagle3`) that pair with a model, the same shape; left out when there are none (see below) |
-| `mmproj_models` | vision projectors, the same shape |
+| `created_at`, `updated_at`, `license`, `pipeline_tag` | from the repository; left out if missing |
+| `architecture`, `context_length` | from the GGUF header |
+| `capabilities` | see below |
+| `readme` | the README at `sha`; left out if there is none |
+| `quants` | every whole weights file that runs on its own, smallest first: `model_id`, `path`, `size`, `sha256` |
+| `mmproj_models` | vision projector files, same shape |
+| `drafts` | small draft files for speculative decoding (`mtp`, `dspark`, `dflash`, `eagle3`), same shape; left out if none |
+
+### `mlx.json` (MLX)
+
+An MLX model is a folder, not one file, so an entry lists every file of it.
+
+```json
+{
+  "model_name": "2001Y/Ternary-Bonsai-2-27B-Abliterated-v2-PQ2_0-MTP-MLX",
+  "developer": "2001Y",
+  "sha": "ea576e1e005b…",
+  "architecture": "qwen3_5",
+  "bits": 2,
+  "capabilities": ["tools"],
+  "size": 8998833332,
+  "files": [
+    { "name": "config.json",
+      "path": "https://huggingface.co/2001Y/…/resolve/ea576e1e005b…/config.json",
+      "size": 4062, "sha256": "95a1ef8781dc…" },
+    …
+  ]
+}
+```
+
+It has the same fields as above (`description`, `downloads`, `likes`, `base_model`, `readme` and so on), except `quants`, `mmproj_models` and `drafts`, and adds:
+
+| Field | Meaning |
+|---|---|
+| `bits` | bit width of quantized weights; left out for unquantized ones |
+| `size` | the whole folder, in bytes |
+| `files` | every file of the folder: `name`, `path`, `size`, `sha256` |
 
 ## Capabilities
 
-For the app to filter and sort by. Each comes from something checkable in the repository, never from a
-guess about quality; every model is a chat model, so that has no entry.
+`capabilities` is a sorted list. Each entry comes from something checkable in the repository, never from a guess about quality. Every model is a chat model, so that has no entry.
 
-| | the repository |
-|---|---|
-| `vision` | has a vision projector (`mmproj-…`), the file llama.cpp needs to read an image. A label saying "image-text-to-text" without one does not count |
-| `audio` | takes sound in: has a vision projector (llama.cpp reads sound through the same file as an image) and Hugging Face labels it so: the pipeline `any-to-any` or `audio-text-to-text`, a tag `audio`, `speech` or `omni`, or `audio`, `omni`, `voxtral` or `ultravox` as a whole word of its name or of the model it was made from |
-| `video` | takes moving pictures in: has a vision projector and is labelled `video-text-to-text`, tagged `video` or `omni`, or has `video` or `omni` as a whole word of its name or of its base model's |
-| `tools` | its chat template uses a list of tools, `tools` as a whole word inside a `{{ … }}` or `{% … %}` (not in a comment, nor in text that says the model takes none); when the template is unknown, an explicit tag (`function-calling`, `tool-use`) stands in |
-| `code` | is made for programming: a whole word of its name (`coder`, `code`, `devstral`, not `encoder`), its tags, or the name of the model it was made from say so |
-| `agent` | is put forward for agents by its tags, its name, or three mentions of agents and tool calling in its README, and its template, when known, takes tools |
+- `vision`: it has a vision projector (`mmproj-…`) for GGUF, or a vision tower and an image processor in the folder for MLX.
+- `audio`: GGUF only. It has a projector and is labelled as taking sound (`any-to-any`, `audio-text-to-text`, an `audio`, `speech` or `omni` tag, or such a word in its name).
+- `video`: GGUF only. It has a projector and is labelled as taking video (`video-text-to-text`, a `video` or `omni` tag, or such a word in its name).
+- `tools`: its chat template uses a list of tools. When the template is unknown, a tag such as `function-calling` or `tool-use` stands in.
+- `code`: made for programming, by its name, tags or the model it was made from (`coder`, `devstral`, …).
+- `agent`: put forward for agents by its tags, its name or its README, and its template takes tools. This is narrower than `tools`.
 
-Most models take tools, so `agent` is the narrower claim: the author says it is meant for agents. "Agent
-and coding" is `agent` and `code` together.
+The MLX engine takes text and pictures only, so `mlx.json` never has `audio` or `video`.
 
-`size` is in bytes. `sha256` is the file's SHA-256 as Hugging Face's LFS states it; a file that is not in
-LFS, or whose hash is not 64 hex digits, is not offered, since it could not be checked after the download.
-`model_id` is the path in the repository without `.gguf`. Every `path` is
-`https://huggingface.co/<owner>/<name>/resolve/<commit>/<file>`, with no `.` or `..` segment.
+## What gets in
 
-## Files that are not models
+For GGUF, a repository is listed when:
 
-A repository keeps files beside its models, and none of them is offered as a model: a file under
-50 MB (the smallest chat model of the catalog is 149 MB); and a file with `imatrix`, `lora`, `vocab`,
-`tokenizer`, `tts` or `token2wav` as a whole word in its path that is under a tenth of the largest weights
-file of the repository, the parts of a cut file counted (importance data of a quantization, an adapter,
-a vocabulary, the parts of a speech model). Counting the parts matters: a repository whose real weights
-are all parts has no whole file but its importance matrix, and that is not offered as a model. A model that only carries `imatrix` in its name, at the size of a model, is a model. A repository
-left with no model file is left out.
+- anyone can download it, and Hugging Face does not label it as speech, image, video or another non-chat kind;
+- it has a chat template;
+- it is not a big-endian build, and at least one whole weights file runs on its own (files cut into `-00001-of-0000N` parts do not count);
+- it is not an embedding, reranker, LoRA, Whisper or VAE repository, or a non-language architecture.
 
-## Drafts
+Adapters, vocabularies, importance matrices and other small files kept beside the weights are not offered as models.
 
-A draft is a small file for speculative decoding that pairs with a model and runs with no model of its
-own. It is told from a model by its name and its size: a file in a folder of the kind's name (`MTP/…`) or
-beginning with it (`mtp-…`), with `mtp`, `dspark`, `dflash` or `eagle3` as a whole word, unless it
-weighs half of the file it shares its name with, or more (`mtp/Model-MTP-Q4_K_M` beside `Model-Q4_K_M`:
-a whole model that is only filed under the name); or a file with the
-word elsewhere in its name that is under a tenth of the file it is named after (`Model-Q8_0-MTP` beside
-`Model-Q8_0`), or of the largest file when no file is. Most files that carry the word elsewhere are models
-made with the head kept in them: they weigh what the same model weighs, and they are models.
+For MLX, a repository is listed when it is open to everyone, tagged `mlx`, has a chat template, a whole folder (config, tokenizer, every weights part), and an architecture and quantization the engine can load.
 
-## The MLX catalog
+The choices a person makes live in [`curated.toml`](curated.toml) (GGUF) and [`mlx.toml`](mlx.toml) (MLX): size limits, always-listed repositories, and what to keep out. An unknown key in either is an error. The MLX list also adds each chosen model's other quantizations by the same owner (`-4bit`, `-8bit`, `-bf16`, …), so one model comes with all its variants.
 
-[`mlx.json`](mlx.json), beside it, is the catalog of Collm's MLX build, which runs models in Apple's MLX format
-instead of GGUF. Each build reads only its own file: the ordinary one `catalog.json`, the MLX one `mlx.json`, from
+## Run the generator
 
-```
-https://raw.githubusercontent.com/Azazide/collm-catalog/main/mlx.json
-```
-
-An MLX model is a folder, not one file, so an entry lists every file of it, and the app downloads them all into one
-model. A repository is listed when
-
-- it is tagged `mlx` and labelled `text-generation` or `image-text-to-text` on Hugging Face (or not labelled), and anyone
-  can download it;
-- its architecture (`model_type` in `config.json`) is one the engine loads: `model_types` in `mlx.toml`, the
-  architectures of the mlx-swift-lm version the app is pinned to;
-- its weights are unquantized or quantized the way the engine reads (affine at a bit width of `bits` in `mlx.toml`, or
-  the microscaling floats `mxfp4`, `mxfp8` and `nvfp4`);
-- its folder is whole: `config.json`, a tokenizer, and every part of the weights their index names;
-- it has a chat template (in `tokenizer_config.json`, or a `chat_template.jinja` or `chat_template.json`).
-
-The file is `{"format":1,"engine":"mlx","rules":1,"models":[…]}`, one model per line. A model has the fields of the
-GGUF catalog that apply (`model_name`, `developer`, `sha`, `description`, `downloads`, `likes`, the dates, `license`,
-`pipeline_tag`, `architecture`, `context_length`, `capabilities`, `readme`), and
-
-| field | |
-|---|---|
-| `bits` | the bit width of quantized weights; left out for unquantized ones |
-| `size` | the whole folder, in bytes |
-| `files` | every file of the folder at the top of the repository that a model folder holds (the weights, their index, the configuration, the tokenizer's files): `{name, path, size, sha256}`. A file kept in LFS has the SHA-256 Hugging Face states; a small one kept in git is read and hashed by the program |
-
-The list is cut at `max_models` by downloads, but a model is offered with all its quantizations by its owner: for
-each model taken, the owner's repositories of the same name (`-4bit`, `-8bit`, `-bf16`, `-mxfp4`, …) are searched for
-and judged like any other, up to `max_siblings` more. The app shows them as one model with a variant each.
-
-A description that is only what a conversion tool or a quantizer's card writes of every model it makes ("… was
-converted to MLX format from … using mlx-lm", "Model creator: … Original model: …") gives way to what the model was made
-from, as the GGUF catalog's note says it, or to nothing. A model of an architecture in `vision_model_types` whose folder has its
-vision tower (`vision_config`) and image processor (`preprocessor_config.json` or `processor_config.json`) is offered
-with `vision`, the processor among its files; one of an architecture only that list names is left out without them.
-Sound and video are never offered: the engine takes text and pictures. Run it with
-`collm-catalog --engine mlx` (it writes `mlx.json` from `mlx.toml`); the other flags are the same.
-
-## Running it
+You need a recent Rust toolchain.
 
 ```bash
-cargo run --release -- --out catalog.json
+cargo run --release -- --out catalog.json                  # GGUF
+cargo run --release -- --engine mlx --out mlx.json         # MLX
 ```
 
-| | |
+| Flag | Meaning |
 |---|---|
-| `--out PATH` | where the catalog is written (default `catalog.json`); also read as the last catalog |
-| `--curated PATH` | the choices file (default `curated.toml`, or the defaults when there is none) |
-| `--force` | write the catalog even if it is far smaller than the last |
-| `--refresh` | read every repository again instead of carrying over the unchanged ones; needed after the program's rules change, since a carried-over entry is not redone |
-| `HF_TOKEN` | optional; a Hugging Face token only raises the rate limit |
+| `--engine gguf\|mlx` | which catalog to build (default `gguf`) |
+| `--out FILE` | where to write it (default `catalog.json`, or `mlx.json` for MLX); also read as the last catalog |
+| `--curated FILE` | the choices file (default `curated.toml`, or `mlx.toml` for MLX) |
+| `--refresh` | read every repository again instead of reusing unchanged ones |
+| `--force` | write the file even if it shrank sharply |
+| `HF_TOKEN` | optional environment variable; a Hugging Face token only raises the rate limit |
 
-Exit code 0: written. 1: the run failed and the file is untouched. 2: the new catalog has fewer than 70%
-of the last one's models, or fewer than 200, so it is taken for a failed run and the file is untouched.
-(The first guard alone lets a catalog lose a third of itself a night, five nights running.)
+Each run starts from the last file and rereads only repositories whose commit changed. A change of `rules` rereads everything. Before writing, every entry is checked the way a download would meet it, and a bad one is dropped with a reason.
 
-Before the file is written, every model is checked as a download would meet it: a name that is
-`owner/name`, a commit that is a 40-digit hash, a file with a size and a SHA-256 and an address under
-this repository and commit, a README that is this repository's at this commit, no name listed twice.
-A model that fails is left out and the run says why; it never stops the others.
+Exit codes: `0` written, `1` failed (file untouched), `2` the new catalog is under 70% of the last one, or too small (under 200 models for GGUF, 100 for MLX), so it is taken for a failed run (file untouched).
 
-Every run starts from the last `catalog.json`, unless that was made under other `rules`. A repository whose commit has not changed is carried
-over without a request; only new and changed ones are read in full (the file tree, the README). A
-failure on one repository keeps its last entry; a failure on the list ends the run, so a half-read list
-never becomes a catalog. Hugging Face allows an anonymous caller 500 API requests per 5 minutes; the
-program reads the `RateLimit` header and waits when the window is used up.
+A GitHub workflow ([`update.yml`](.github/workflows/update.yml)) runs the tests, builds both files every night and commits the change. It rereads everything on Sundays and on request.
 
 ```bash
 cargo test
 ```
 
-The tests run on answers recorded from Hugging Face (`tests/fixtures`), none on the network.
+The tests use answers recorded from Hugging Face in `tests/fixtures`; none touch the network.
 
-## Licence
+## License
 
-[GNU Affero General Public License v3.0](LICENSE). The models the catalog names belong to their authors
-and are used under the licence each publishes; the catalog gives each one's `license` field as the
-repository states it.
-
-`tests/fixtures` holds answers recorded from the Hugging Face API and the start of four READMEs of
-Apache-2.0 and MIT licensed repositories, kept as they are so the tests run on real data.
+[AGPL-3.0](LICENSE). The models the files list belong to their authors and keep the license each one publishes; every entry carries it as `license`.
