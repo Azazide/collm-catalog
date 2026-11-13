@@ -132,7 +132,10 @@ GGUF catalog that apply (`model_name`, `developer`, `sha`, `description`, `downl
 | `size` | the whole folder, in bytes |
 | `files` | every file of the folder at the top of the repository that a model folder holds (the weights, their index, the configuration, the tokenizer's files): `{name, path, size, sha256}`. A file kept in LFS has the SHA-256 Hugging Face states; a small one kept in git is read and hashed by the program |
 
-A vision tower in the folder is not offered as `vision`: the engine reads text. Run it with
+A description that is only what a conversion tool or a quantizer's card writes of every model it makes ("… was
+converted to MLX format from … using mlx-lm", "Model creator: … Original model: …") gives way to what the model was made
+from, as the GGUF catalog's note says it, or to nothing. A vision tower in the folder is not offered as `vision`: the
+engine reads text. Run it with
 `collm-catalog --engine mlx` (it writes `mlx.json` from `mlx.toml`); the other flags are the same.
 
 ## Running it

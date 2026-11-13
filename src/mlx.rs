@@ -26,7 +26,36 @@ pub const FORMAT: u32 = 1;
 pub const ENGINE: &str = "mlx";
 /// The version of the rules an entry was made under (see `model::RULES`); a change reads every
 /// repository again.
-pub const RULES: u32 = 1;
+pub const RULES: u32 = 2;
+
+/// Whether a README's first statement is only what a conversion tool or a quantizer's card writes about every model it
+/// makes ("… was converted to MLX format from … using mlx-lm", "Model creator: … Original model: …"): it says nothing
+/// of the model, and each one names its own repository, so the shared-blurb rule never sees two alike.
+pub fn is_conversion_blurb(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    lower.contains("converted to mlx format")
+        || lower.starts_with("model creator:")
+        || lower.starts_with("compatibility:")
+        || (lower.contains("model creator:") && lower.contains("original model:"))
+}
+
+/// The repository a conversion blurb names as its source ("… converted to MLX format from `owner/name` …").
+fn converted_from(text: &str) -> Option<String> {
+    let lower = text.to_lowercase();
+    let at = lower.find("mlx format from ")? + "mlx format from ".len();
+    let rest = text.get(at..)?;
+    let word = rest.split_whitespace().next()?.trim_end_matches(['.', ',', ';', ')']);
+    is_repo_id(word).then(|| word.to_string())
+}
+
+/// What stands for a conversion blurb: the note of what the model was made from (its `base_model` tags, else the
+/// source the blurb names), or nothing.
+fn instead_of_blurb(blurb: &str, note: Option<String>) -> String {
+    note.or_else(|| {
+        converted_from(blurb).and_then(|base| describe::base_model_note(&[format!("base_model:quantized:{base}")]))
+    })
+    .unwrap_or_default()
+}
 
 /// A small file kept in git is read whole to be hashed, never more than this.
 const SMALL_FILE_LIMIT: u64 = 32 * 1024 * 1024;
@@ -580,10 +609,12 @@ fn process(hf: &dyn Hf, curated: &MlxCurated, repo: &Repo, old: Option<&MlxModel
 
     let readme = hf.readme(id, &rev)?;
     let note = describe::base_model_note(&repo.tags);
-    let description = Some(readme.as_deref().map(describe::description).unwrap_or_default())
-        .filter(|text| !text.is_empty())
-        .or_else(|| note.clone())
-        .unwrap_or_default();
+    let first = readme.as_deref().map(describe::description).unwrap_or_default();
+    let description = if is_conversion_blurb(&first) {
+        instead_of_blurb(&first, note.clone())
+    } else {
+        Some(first).filter(|text| !text.is_empty()).or_else(|| note.clone()).unwrap_or_default()
+    };
     Ok(Outcome::Fetched {
         model: MlxModel {
             model_name: repo.id.clone(),
@@ -759,7 +790,7 @@ mod tests {
         // Read once, though it is both understood and hashed.
         assert_eq!(fake.asked.borrow().iter().filter(|a| a.ends_with(" config.json")).count(), 1);
         let text = render(&catalog);
-        assert!(text.starts_with("{\"format\":1,\"engine\":\"mlx\",\"rules\":1,\"models\":[\n"));
+        assert!(text.starts_with(&format!("{{\"format\":1,\"engine\":\"mlx\",\"rules\":{RULES},\"models\":[\n")));
         assert_eq!(MlxCatalog::from_text(&text), catalog);
     }
 
@@ -872,6 +903,22 @@ mod tests {
         assert!(shipped.loads("qwen3") && shipped.loads("llama") && !shipped.loads("bert"));
         assert_eq!(shipped.bits, default_bits());
         assert!(MlxCurated::parse("model_types = []\nmax_model = 3\n").is_err(), "an unknown key is an error");
+    }
+
+    #[test]
+    fn a_conversion_blurb_gives_way_to_what_the_model_was_made_from() {
+        let blurb = "This model mlx-community/Qwen3-4B-4bit was converted to MLX format from Qwen/Qwen3-4B using mlx-lm version 0.26.2.";
+        assert!(is_conversion_blurb(blurb));
+        assert!(is_conversion_blurb("The Model a/b was converted to MLX format from c/d using mlx-lm version 0.20."));
+        assert!(is_conversion_blurb("Model creator: Qwen Original model: Qwen3-4B MLX quantization: provided by LM Studio team"));
+        assert!(is_conversion_blurb("Compatibility: Apple Silicon Macs Model creator: Qwen Original model: Qwen3-4B"));
+        assert!(!is_conversion_blurb("A small model that answers questions about the weather."));
+        // The tags' note first; the source the blurb names when there are none; nothing when neither says.
+        let tags = describe::base_model_note(&["base_model:finetune:x/Base".to_string()]);
+        assert_eq!(instead_of_blurb(blurb, tags.clone()), tags.unwrap());
+        let named = instead_of_blurb(blurb, None);
+        assert!(named.contains("Qwen/Qwen3-4B") && !named.contains("mlx-lm"), "{named}");
+        assert_eq!(instead_of_blurb("Model creator: Qwen Original model: Qwen3-4B", None), "");
     }
 
     #[test]
