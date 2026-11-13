@@ -2,11 +2,11 @@
 # MLX chat model at all is in src/mlx.rs. An unknown key is an error.
 
 # The catalog holds at most this many models, taken by downloads over the last 30 days.
-max_models = 300
+max_models = 600
 
 # Repositories looked into in one run, at most. A new or changed one costs a few requests (its file
 # tree, its small files, its README).
-max_candidates = 900
+max_candidates = 1800
 
 # The list is read 1000 repositories at a time, at most this many pages.
 max_list_pages = 3

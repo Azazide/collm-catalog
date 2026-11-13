@@ -20,7 +20,7 @@ const KEEP_RATIO: f64 = 0.7;
 /// A run that gives fewer models than this has failed, whatever the last catalog held (a good run gives
 /// about 390).
 const MIN_MODELS: usize = 200;
-/// The same for the MLX catalog, whose list is shorter (a good run gives about 300).
+/// The same for the MLX catalog, whose list is shorter (a good run gives about 600).
 const MIN_MLX_MODELS: usize = 100;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
