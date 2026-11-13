@@ -331,7 +331,7 @@ impl Hf for HttpHf {
         self.page(
             cursor,
             &format!(
-                "{API}?filter=mlx&pipeline_tag=text-generation&sort=downloads&direction=-1&limit={PAGE_SIZE}&{EXPAND}&{MLX_EXPAND}"
+                "{API}?filter=mlx&sort=downloads&direction=-1&limit={PAGE_SIZE}&{EXPAND}&{MLX_EXPAND}"
             ),
         )
     }

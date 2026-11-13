@@ -28,6 +28,15 @@ model_types = [
   "qwen3_next", "smollm3", "starcoder2",
 ]
 
+# The architectures it loads as models that see images (the vision registry of mlx-swift-lm 3.32.3): a folder of one
+# of these with a vision tower (`vision_config`) and an image processor (`preprocessor_config.json` or
+# `processor_config.json`) is offered with `vision`. One that is also above is a text model without them.
+vision_model_types = [
+  "fastvlm", "gemma3", "gemma4", "gemma4_unified", "glm_ocr", "idefics3", "lfm2_vl", "llava_qwen2", "mistral3",
+  "muse_glimmer", "paligemma", "pixtral", "qwen2_5_vl", "qwen2_vl", "qwen3_5", "qwen3_5_moe", "qwen3_vl",
+  "qwen3_vl_moe", "smolvlm",
+]
+
 # The bit widths of quantized weights the engine reads (affine quantization); unquantized weights are
 # always read.
 bits = [2, 3, 4, 5, 6, 8]

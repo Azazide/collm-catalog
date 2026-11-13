@@ -26,7 +26,7 @@ pub const FORMAT: u32 = 1;
 pub const ENGINE: &str = "mlx";
 /// The version of the rules an entry was made under (see `model::RULES`); a change reads every
 /// repository again.
-pub const RULES: u32 = 2;
+pub const RULES: u32 = 3;
 
 /// Whether a README's first statement is only what a conversion tool or a quantizer's card writes about every model it
 /// makes ("… was converted to MLX format from … using mlx-lm", "Model creator: … Original model: …"): it says nothing
@@ -77,8 +77,12 @@ pub struct MlxCurated {
     /// The largest folder offered, in bytes; none when 0.
     #[serde(default)]
     pub max_bytes: u64,
-    /// The architectures (`model_type` of `config.json`) the engine loads.
+    /// The architectures (`model_type` of `config.json`) the engine loads for text.
     pub model_types: Vec<String>,
+    /// The architectures it loads as models that see images: a folder with a vision tower (`vision_config`) and an
+    /// image processor (`preprocessor_config.json` or `processor_config.json`) of one of these sees images.
+    #[serde(default)]
+    pub vision_model_types: Vec<String>,
     /// The bit widths of quantized weights the engine reads (unquantized weights are always read).
     #[serde(default = "default_bits")]
     pub bits: Vec<u64>,
@@ -109,7 +113,11 @@ impl MlxCurated {
     }
 
     fn loads(&self, model_type: &str) -> bool {
-        self.model_types.iter().any(|t| t.eq_ignore_ascii_case(model_type))
+        self.model_types.iter().any(|t| t.eq_ignore_ascii_case(model_type)) || self.sees(model_type)
+    }
+
+    fn sees(&self, model_type: &str) -> bool {
+        self.vision_model_types.iter().any(|t| t.eq_ignore_ascii_case(model_type))
     }
 }
 
@@ -133,6 +141,9 @@ pub fn wanted(name: &str) -> bool {
                 | "tokenizer.model"
                 | "chat_template.jinja"
                 | "chat_template.json"
+                // The image processor of a model that sees images.
+                | "preprocessor_config.json"
+                | "processor_config.json"
         )
 }
 
@@ -337,6 +348,12 @@ fn prefilter(curated: &MlxCurated, repo: &Repo) -> Result<(), Reason> {
     if repo.private {
         return Err(Reason::Private);
     }
+    // A chat model, or one that sees images and answers in text; an unlabelled one is judged by its template.
+    if let Some(tag) = repo.pipeline_tag.as_deref()
+        && !matches!(tag, "text-generation" | "image-text-to-text")
+    {
+        return Err(Reason::NotAChatPipeline);
+    }
     if curated.exclude_developers.iter().any(|d| d.eq_ignore_ascii_case(owner)) {
         return Err(Reason::ExcludedDeveloper);
     }
@@ -540,6 +557,14 @@ fn process(hf: &dyn Hf, curated: &MlxCurated, repo: &Repo, old: Option<&MlxModel
     if !curated.loads(&architecture) {
         return Ok(Outcome::Rejected(Reason::ExcludedArchitecture));
     }
+    // A model that sees images, as the engine loads one (`Engine.takesImages`); an architecture the engine loads only
+    // that way is no text model without its vision tower and processor.
+    let vision = curated.sees(&architecture)
+        && config.get("vision_config").is_some_and(|v| v.is_object())
+        && (has("preprocessor_config.json") || has("processor_config.json"));
+    if !vision && !curated.model_types.iter().any(|t| t.eq_ignore_ascii_case(&architecture)) {
+        return Ok(Outcome::Rejected(Reason::ExcludedArchitecture));
+    }
     let quantization = config.get("quantization").or_else(|| config.get("quantization_config"));
     let bits = match quantization {
         None => None,
@@ -630,15 +655,22 @@ fn process(hf: &dyn Hf, curated: &MlxCurated, repo: &Repo, old: Option<&MlxModel
             architecture,
             context_length: context_of(&config),
             bits,
-            capabilities: classify::capabilities(&Signals {
-                id,
-                tags: &repo.tags,
-                pipeline_tag: repo.pipeline_tag.as_deref(),
-                tools: Some(classify::template_takes_tools(&template)),
-                // The engine reads text: a vision tower in the folder is not offered as vision.
-                has_projector: false,
-                readme: readme.as_deref(),
-            }),
+            capabilities: {
+                let mut found = classify::capabilities(&Signals {
+                    id,
+                    tags: &repo.tags,
+                    pipeline_tag: repo.pipeline_tag.as_deref(),
+                    tools: Some(classify::template_takes_tools(&template)),
+                    // Sound and video are never offered: the engine takes text and pictures. Vision is the folder's.
+                    has_projector: false,
+                    readme: readme.as_deref(),
+                });
+                if vision {
+                    found.push(classify::VISION.to_string());
+                    found.sort();
+                }
+                found
+            },
             readme: readme.map(|_| format!("https://huggingface.co/{id}/resolve/{rev}/README.md")).unwrap_or_default(),
             size,
             files,
@@ -746,7 +778,7 @@ mod tests {
     }
 
     fn curated() -> MlxCurated {
-        MlxCurated::parse("model_types = [\"qwen3\", \"llama\"]\n").unwrap()
+        MlxCurated::parse("model_types = [\"qwen3\", \"llama\"]\nvision_model_types = [\"qwen2_5_vl\", \"qwen3\"]\n").unwrap()
     }
 
     fn config(extra: &str) -> String {
@@ -827,6 +859,29 @@ mod tests {
         assert_eq!(count(Reason::NoChatTemplate), 1);
         // The architecture the list read is enough to pass a repository by without a request.
         assert!(!fake.asked.borrow().iter().any(|a| a.contains("unknown-arch")));
+    }
+
+    #[test]
+    fn a_folder_that_sees_images_is_offered_with_vision_and_one_without_its_processor_is_not() {
+        let tok = tokenizer_config();
+        let vl = r#"{"model_type":"qwen2_5_vl","vision_config":{"depth":32},"text_config":{"max_position_embeddings":32768}}"#;
+        let mut fake = Fake::default()
+            .with("o/Sees-4bit", "qwen2_5_vl", &[("config.json", vl), ("tokenizer.json", "{}"), ("tokenizer_config.json", &tok), ("preprocessor_config.json", "{}")], &["model.safetensors"])
+            .with("o/Blind-4bit", "qwen2_5_vl", &[("config.json", vl), ("tokenizer.json", "{}"), ("tokenizer_config.json", &tok)], &["model.safetensors"])
+            .with("o/Text-4bit", "qwen3", &[("config.json", &config("")), ("tokenizer.json", "{}"), ("tokenizer_config.json", &tok)], &["model.safetensors"])
+            .with("o/Talks-4bit", "qwen3", &[("config.json", &config("")), ("tokenizer.json", "{}"), ("tokenizer_config.json", &tok)], &["model.safetensors"]);
+        // Hugging Face labels a model that sees images `image-text-to-text`; one that speaks is no chat model here.
+        fake.repos[0].pipeline_tag = Some("image-text-to-text".into());
+        fake.repos[3].pipeline_tag = Some("text-to-speech".into());
+        let (catalog, stats) = run(&fake);
+        let names: Vec<&str> = catalog.models.iter().map(|m| m.model_name.as_str()).collect();
+        assert_eq!(names, ["o/Sees-4bit", "o/Text-4bit"], "{stats:?}");
+        let sees = &catalog.models[0];
+        assert!(sees.capabilities.contains(&"vision".to_string()), "{:?}", sees.capabilities);
+        assert!(sees.files.iter().any(|f| f.name == "preprocessor_config.json"));
+        assert!(!catalog.models[1].capabilities.contains(&"vision".to_string()));
+        assert_eq!(stats.rejected.get(&Reason::ExcludedArchitecture).copied(), Some(1), "a vision architecture without its processor");
+        assert_eq!(stats.rejected.get(&Reason::NotAChatPipeline).copied(), Some(1));
     }
 
     #[test]

@@ -115,7 +115,8 @@ https://raw.githubusercontent.com/Azazide/collm-catalog/main/mlx.json
 An MLX model is a folder, not one file, so an entry lists every file of it, and the app downloads them all into one
 model. A repository is listed when
 
-- it is tagged `mlx` and labelled `text-generation` on Hugging Face, and anyone can download it;
+- it is tagged `mlx` and labelled `text-generation` or `image-text-to-text` on Hugging Face (or not labelled), and anyone
+  can download it;
 - its architecture (`model_type` in `config.json`) is one the engine loads: `model_types` in `mlx.toml`, the
   architectures of the mlx-swift-lm version the app is pinned to;
 - its weights are unquantized or quantized the way the engine reads (affine, a bit width of `bits` in `mlx.toml`);
@@ -134,8 +135,10 @@ GGUF catalog that apply (`model_name`, `developer`, `sha`, `description`, `downl
 
 A description that is only what a conversion tool or a quantizer's card writes of every model it makes ("… was
 converted to MLX format from … using mlx-lm", "Model creator: … Original model: …") gives way to what the model was made
-from, as the GGUF catalog's note says it, or to nothing. A vision tower in the folder is not offered as `vision`: the
-engine reads text. Run it with
+from, as the GGUF catalog's note says it, or to nothing. A model of an architecture in `vision_model_types` whose folder has its
+vision tower (`vision_config`) and image processor (`preprocessor_config.json` or `processor_config.json`) is offered
+with `vision`, the processor among its files; one of an architecture only that list names is left out without them.
+Sound and video are never offered: the engine takes text and pictures. Run it with
 `collm-catalog --engine mlx` (it writes `mlx.json` from `mlx.toml`); the other flags are the same.
 
 ## Running it
