@@ -136,7 +136,12 @@ The choices a person makes live in [`curated.toml`](curated.toml) (GGUF) and [`m
 
 ## Run the generator
 
-You need a recent Rust toolchain.
+You need Git and a recent Rust toolchain. Clone the repository and run the commands from its root:
+
+```bash
+git clone https://github.com/Azazide/collm-catalog.git
+cd collm-catalog
+```
 
 ```bash
 cargo run --release -- --out catalog.json                  # GGUF
