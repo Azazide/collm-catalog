@@ -169,6 +169,21 @@ cargo test
 
 The tests use answers recorded from Hugging Face in `tests/fixtures`; none touch the network.
 
+## Verify a downloaded file
+
+`sha` identifies the Hugging Face repository commit. It is not a file checksum. To check a download, compare its byte count and SHA-256 with the file entry's `size` and `sha256`.
+
+On macOS, for example:
+
+```bash
+shasum -a 256 /path/to/model.gguf
+wc -c < /path/to/model.gguf
+```
+
+The 64-character hash must match `sha256`, and the byte count must match `size`. On Linux, use `sha256sum /path/to/model.gguf` for the hash. If either differs, discard the incomplete or changed download and fetch it again from the entry's pinned `path` before loading it.
+
+For GGUF, check the chosen weights file and any projector or draft file you download. For MLX, check each entry in `files`; the model-level `size` is the total folder size, not the size of an individual file. A matching checksum confirms that the bytes match the catalog; it does not establish who trained the model or whether you trust its publisher.
+
 ## License
 
 [AGPL-3.0](LICENSE). The models the files list belong to their authors and keep the license each one publishes; every entry carries it as `license`.
