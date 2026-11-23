@@ -49,3 +49,37 @@ exclude_developers = []
 
 # Repositories whose name holds one of these, in any case, are never listed.
 exclude_name_contains = ["embed", "rerank", "lora", "whisper", "-vae", "eagle", "dflash", "mtp-draft"]
+
+# The models the app's author ran in Collm's MLX build: their entries carry `collm` (the app's "Tested in Collm" tab).
+# level: tested or tuned; checked: the day, YYYY-MM-DD; note: one short line (at most 160 characters), optional.
+# A marked repository is always listed, as a pinned one is. A model that does not keep up is not marked.
+
+[[mark]]
+repo = "nace-ai/Qwen3.5-9B-MLX-Q5"
+level = "tested"
+checked = "2026-11-23"
+note = "Agent runs in Collm: tools, files and computer control."
+
+[[mark]]
+repo = "mlx-community/gpt-oss-20b-mxfp4-bf16"
+level = "tested"
+checked = "2026-11-23"
+note = "Agent runs in Collm: tools and files."
+
+[[mark]]
+repo = "mlx-community/KAT-Coder-V2.5-Dev-OptiQ-4bit"
+level = "tested"
+checked = "2026-11-23"
+note = "Code runs in Collm: tools and files."
+
+[[mark]]
+repo = "mlx-community/gemma-4-31B-it-qat-OptiQ-4bit"
+level = "tested"
+checked = "2026-11-23"
+note = "Runs in Collm."
+
+[[mark]]
+repo = "peculiar-ragdoll/Cyber-Tiel-Coder-35B-A3B-MLX-oQ4e-MTP"
+level = "tested"
+checked = "2026-11-23"
+note = "Runs in Collm."

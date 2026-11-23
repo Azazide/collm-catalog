@@ -226,6 +226,9 @@ fn run_mlx(args: &Args) -> ExitCode {
     for (reason, count) in &stats.rejected {
         eprintln!("  left out {count}: {}", reason.text());
     }
+    for repo in catalog.apply_marks(&curated.marks) {
+        eprintln!("marked but not in the catalog: {repo}");
+    }
     for (name, problems) in catalog.drop_malformed() {
         eprintln!("left out {name}: {}", problems.join("; "));
     }

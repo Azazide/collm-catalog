@@ -95,6 +95,91 @@ pub struct MlxCurated {
     pub exclude_developers: Vec<String>,
     #[serde(default)]
     pub exclude_name_contains: Vec<String>,
+    /// The models the app's author ran in Collm: each entry's `collm` mark (`[[mark]]` in mlx.toml). A marked repository
+    /// is always listed, as a pinned one is.
+    #[serde(default, rename = "mark")]
+    pub marks: Vec<MarkEntry>,
+}
+
+/// One `[[mark]]` of mlx.toml: a repository and the mark its entry carries.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MarkEntry {
+    pub repo: String,
+    pub level: String,
+    pub checked: String,
+    #[serde(default)]
+    pub note: Option<String>,
+}
+
+/// The app's author's mark that a model was run in Collm (`tested`) or tuned for it (`tuned`), as the app reads it
+/// (`web-app/src/lib/collmMark.ts`: a level it knows, a real calendar day, a note of one short plain line, or no mark at all).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CollmMark {
+    pub level: String,
+    pub checked: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
+/// The levels the app knows.
+pub const MARK_LEVELS: [&str; 2] = ["tested", "tuned"];
+/// The longest note the app shows (`MARK_NOTE_MAX`).
+pub const MARK_NOTE_MAX: usize = 160;
+
+fn is_calendar_day(day: &str) -> bool {
+    let b = day.as_bytes();
+    if b.len() != 10 || b[4] != b'-' || b[7] != b'-' {
+        return false;
+    }
+    let num = |r: std::ops::Range<usize>| day[r].parse::<u32>().ok();
+    let (Some(y), Some(m), Some(d)) = (num(0..4), num(5..7), num(8..10)) else { return false };
+    if !day[0..4].bytes().chain(day[5..7].bytes()).chain(day[8..10].bytes()).all(|c| c.is_ascii_digit()) {
+        return false;
+    }
+    let leap = (y % 4 == 0 && y % 100 != 0) || y % 400 == 0;
+    let days = match m {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if leap => 29,
+        2 => 28,
+        _ => return false,
+    };
+    (1..=days).contains(&d)
+}
+
+/// A character that has no place in a one-line note: control characters and the marks that reorder text on screen.
+fn not_plain(c: char) -> bool {
+    c.is_control() || matches!(c, '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
+}
+
+impl CollmMark {
+    /// What the app would refuse in it (it drops the whole mark then).
+    pub fn problems(&self) -> Vec<String> {
+        let mut found = Vec::new();
+        if !MARK_LEVELS.contains(&self.level.as_str()) {
+            found.push(format!("the level `{}` is not tested or tuned", self.level));
+        }
+        if !is_calendar_day(&self.checked) {
+            found.push(format!("`{}` is not a day written YYYY-MM-DD", self.checked));
+        }
+        if let Some(note) = &self.note {
+            if note.chars().any(not_plain) {
+                found.push("the note is not one line of plain text".to_string());
+            }
+            if note.trim().chars().count() > MARK_NOTE_MAX || note.trim().is_empty() {
+                found.push(format!("the note is empty or longer than {MARK_NOTE_MAX} characters"));
+            }
+        }
+        found
+    }
+}
+
+impl MarkEntry {
+    pub fn mark(&self) -> CollmMark {
+        CollmMark { level: self.level.clone(), checked: self.checked.clone(), note: self.note.as_ref().map(|n| n.trim().to_string()) }
+    }
 }
 
 fn default_max_models() -> usize {
@@ -115,7 +200,32 @@ fn default_bits() -> Vec<u64> {
 
 impl MlxCurated {
     pub fn parse(text: &str) -> Result<MlxCurated, String> {
-        toml::from_str(text).map_err(|e| format!("mlx.toml: {e}"))
+        let curated: MlxCurated = toml::from_str(text).map_err(|e| format!("mlx.toml: {e}"))?;
+        let mut seen = HashSet::new();
+        for entry in &curated.marks {
+            if !is_repo_id(&entry.repo) {
+                return Err(format!("mlx.toml: the mark of `{}`: not owner/name", entry.repo));
+            }
+            if !seen.insert(entry.repo.to_lowercase()) {
+                return Err(format!("mlx.toml: `{}` is marked twice", entry.repo));
+            }
+            let problems = entry.mark().problems();
+            if !problems.is_empty() {
+                return Err(format!("mlx.toml: the mark of `{}`: {}", entry.repo, problems.join("; ")));
+            }
+        }
+        Ok(curated)
+    }
+
+    /// The repositories always listed: the pinned ones, then the marked ones not pinned already.
+    pub fn always_listed(&self) -> Vec<String> {
+        let mut ids = self.pinned.clone();
+        for entry in &self.marks {
+            if !ids.iter().any(|id| id.eq_ignore_ascii_case(&entry.repo)) {
+                ids.push(entry.repo.clone());
+            }
+        }
+        ids
     }
 
     fn loads(&self, model_type: &str) -> bool {
@@ -244,6 +354,9 @@ pub struct MlxModel {
     pub size: u64,
     /// Every file of the folder, by name.
     pub files: Vec<FolderFile>,
+    /// The app's author's mark that it was run in Collm (`[[mark]]` of mlx.toml, set by `apply_marks`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub collm: Option<CollmMark>,
 }
 
 /// One file of a model folder.
@@ -272,6 +385,19 @@ impl MlxCatalog {
             Ok(catalog) if catalog.format == FORMAT && catalog.engine == ENGINE => catalog,
             _ => MlxCatalog::empty(),
         }
+    }
+
+    /// Gives each model the mark mlx.toml has for it, and takes away any other (a mark removed there is removed here). Says
+    /// which marked repositories are not in the catalog.
+    pub fn apply_marks(&mut self, marks: &[MarkEntry]) -> Vec<String> {
+        for model in &mut self.models {
+            model.collm = marks.iter().find(|m| m.repo.eq_ignore_ascii_case(&model.model_name)).map(MarkEntry::mark);
+        }
+        marks
+            .iter()
+            .filter(|m| !self.models.iter().any(|model| model.model_name.eq_ignore_ascii_case(&m.repo)))
+            .map(|m| m.repo.clone())
+            .collect()
     }
 
     /// Takes out the models whose data is not well formed, and says which and why.
@@ -309,6 +435,9 @@ impl MlxModel {
         if self.sha.len() != 40 || !self.sha.bytes().all(|b| b.is_ascii_hexdigit()) {
             found.push("the commit is not a 40-digit hash".to_string());
             return found;
+        }
+        if let Some(mark) = &self.collm {
+            found.extend(mark.problems().into_iter().map(|p| format!("its mark: {p}")));
         }
         let at = format!("https://huggingface.co/{}/resolve/{}/", self.model_name, self.sha);
         let names: HashSet<String> = self.files.iter().map(|f| f.name.to_ascii_lowercase()).collect();
@@ -431,7 +560,8 @@ pub fn build(
 ) -> Result<(MlxCatalog, Stats), HfError> {
     let before: HashMap<String, &MlxModel> =
         previous.models.iter().map(|m| (m.model_name.to_lowercase(), m)).collect();
-    let pinned: HashSet<String> = curated.pinned.iter().map(|id| id.to_lowercase()).collect();
+    let always = curated.always_listed();
+    let pinned: HashSet<String> = always.iter().map(|id| id.to_lowercase()).collect();
     let mut stats = Stats::default();
     let mut seen: HashSet<String> = HashSet::new();
     let mut models: Vec<MlxModel> = Vec::new();
@@ -440,7 +570,7 @@ pub fn build(
     let mut queue: VecDeque<Repo> = VecDeque::new();
     let (mut taken, mut looked_into) = (0usize, 0usize);
 
-    for id in &curated.pinned {
+    for id in &always {
         match hf.mlx_repo(id) {
             Ok(repo) => queue.push_back(repo),
             Err(e) => {
@@ -808,6 +938,7 @@ fn process(
             readme: readme.map(|_| format!("https://huggingface.co/{id}/resolve/{rev}/README.md")).unwrap_or_default(),
             size,
             files,
+            collm: None,
         },
         note,
     })
@@ -1105,8 +1236,15 @@ mod tests {
             readme: String::new(),
             size: 3,
             files: vec![file("config.json"), file("model.safetensors"), file("tokenizer.json")],
+            collm: None,
         };
         assert!(good.problems().is_empty(), "{:?}", good.problems());
+        // A mark the app would drop is a problem of the entry (the app reads it whole or not at all).
+        let mut marked = good.clone();
+        marked.collm = Some(CollmMark { level: "tested".into(), checked: "2026-11-23".into(), note: Some("Runs in Collm.".into()) });
+        assert!(marked.problems().is_empty(), "{:?}", marked.problems());
+        marked.collm = Some(CollmMark { level: "loved".into(), checked: "2026-02-30".into(), note: None });
+        assert_eq!(marked.problems().len(), 2, "{:?}", marked.problems());
         let mut elsewhere = good.clone();
         elsewhere.files[1].path = "https://example.com/model.safetensors".into();
         assert!(elsewhere.problems().iter().any(|p| p.contains("not the file at this commit")));
@@ -1235,5 +1373,87 @@ mod tests {
     fn a_gguf_catalog_is_not_read_as_an_mlx_one() {
         assert!(MlxCatalog::from_text("{\"format\":1,\"rules\":3,\"models\":[]}").models.is_empty());
         assert!(MlxCatalog::from_text("{\"format\":1,\"engine\":\"gguf\",\"rules\":1,\"models\":[]}").engine == ENGINE);
+    }
+
+    // The owner (2026-11-23): "Проверено в Collm" in the app was empty: the catalog carried no marks.
+    #[test]
+    fn marks_are_read_checked_and_listed() {
+        let base = "model_types = [\"qwen3\"]\n";
+        let good = MlxCurated::parse(&format!(
+            "{base}pinned = [\"a/pinned\"]\n[[mark]]\nrepo = \"nace-ai/Qwen3.5-9B-MLX-Q5\"\nlevel = \"tested\"\nchecked = \"2026-11-23\"\nnote = \"Agent runs.\"\n[[mark]]\nrepo = \"A/Pinned\"\nlevel = \"tuned\"\nchecked = \"2024-02-29\"\n"
+        ))
+        .unwrap();
+        assert_eq!(good.marks.len(), 2);
+        assert_eq!(good.always_listed(), vec!["a/pinned".to_string(), "nace-ai/Qwen3.5-9B-MLX-Q5".to_string()]);
+        for (bad, why) in [
+            ("repo = \"x\"\nlevel = \"tested\"\nchecked = \"2026-11-23\"", "not owner/name"),
+            ("repo = \"o/m\"\nlevel = \"great\"\nchecked = \"2026-11-23\"", "not tested or tuned"),
+            ("repo = \"o/m\"\nlevel = \"tested\"\nchecked = \"2026-02-30\"", "YYYY-MM-DD"),
+            ("repo = \"o/m\"\nlevel = \"tested\"\nchecked = \"23.11.2026\"", "YYYY-MM-DD"),
+            ("repo = \"o/m\"\nlevel = \"tested\"\nchecked = \"2026-11-23\"\nnote = \"a\\nb\"", "plain text"),
+            ("repo = \"o/m\"\nlevel = \"tested\"\nchecked = \"2026-11-23\"\nsomething = 1", "unknown field"),
+        ] {
+            let err = MlxCurated::parse(&format!("{base}[[mark]]\n{bad}\n")).unwrap_err();
+            assert!(err.contains(why), "{bad}: {err}");
+        }
+        let long = "x".repeat(MARK_NOTE_MAX + 1);
+        let err = MlxCurated::parse(&format!("{base}[[mark]]\nrepo = \"o/m\"\nlevel = \"tested\"\nchecked = \"2026-11-23\"\nnote = \"{long}\"\n")).unwrap_err();
+        assert!(err.contains("longer than"), "{err}");
+        let twice = MlxCurated::parse(&format!(
+            "{base}[[mark]]\nrepo = \"o/m\"\nlevel = \"tested\"\nchecked = \"2026-11-23\"\n[[mark]]\nrepo = \"O/M\"\nlevel = \"tested\"\nchecked = \"2026-11-23\"\n"
+        ))
+        .unwrap_err();
+        assert!(twice.contains("marked twice"), "{twice}");
+    }
+
+    #[test]
+    fn marks_are_put_on_their_entries_and_taken_off_the_others() {
+        let entry = |name: &str| MlxModel {
+            model_name: name.into(),
+            base_model: None,
+            developer: name.split('/').next().unwrap().into(),
+            sha: SHA.into(),
+            description: String::new(),
+            downloads: 0,
+            likes: 0,
+            created_at: None,
+            updated_at: None,
+            license: None,
+            pipeline_tag: None,
+            architecture: "qwen3".into(),
+            context_length: None,
+            bits: None,
+            capabilities: vec![],
+            readme: String::new(),
+            size: 3,
+            files: vec![],
+            // An old mark that mlx.toml no longer has.
+            collm: Some(CollmMark { level: "tested".into(), checked: "2026-01-01".into(), note: None }),
+        };
+        let mut catalog = MlxCatalog { models: vec![entry("nace-ai/Qwen3.5-9B-MLX-Q5"), entry("o/other")], ..MlxCatalog::empty() };
+        let marks = vec![
+            MarkEntry { repo: "NACE-AI/qwen3.5-9b-mlx-q5".into(), level: "tested".into(), checked: "2026-11-23".into(), note: Some(" Agent runs. ".into()) },
+            MarkEntry { repo: "o/gone".into(), level: "tested".into(), checked: "2026-11-23".into(), note: None },
+        ];
+        assert_eq!(catalog.apply_marks(&marks), vec!["o/gone".to_string()]);
+        assert_eq!(
+            catalog.models[0].collm,
+            Some(CollmMark { level: "tested".into(), checked: "2026-11-23".into(), note: Some("Agent runs.".into()) })
+        );
+        assert_eq!(catalog.models[1].collm, None, "a mark taken out of mlx.toml is taken off");
+        let text = render(&catalog);
+        assert!(text.contains(r#""collm":{"level":"tested","checked":"2026-11-23","note":"Agent runs."}"#), "{text}");
+        assert!(!text.lines().nth(2).unwrap_or_default().contains("collm"), "no mark, no key");
+        assert_eq!(MlxCatalog::from_text(&text).models[0].collm, catalog.models[0].collm);
+    }
+
+    /// The mlx.toml the workflow runs with parses, and every repository it marks is in the mlx.json beside it.
+    #[test]
+    fn the_shipped_marks_parse_and_name_listed_models() {
+        let curated = MlxCurated::parse(include_str!("../mlx.toml")).unwrap();
+        assert!(!curated.marks.is_empty());
+        let mut catalog = MlxCatalog::from_text(include_str!("../mlx.json"));
+        assert_eq!(catalog.apply_marks(&curated.marks), Vec::<String>::new());
+        assert!(catalog.drop_malformed().is_empty());
     }
 }
