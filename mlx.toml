@@ -42,7 +42,19 @@ vision_model_types = [
 bits = [2, 3, 4, 5, 6, 8]
 
 # Listed first, whatever their downloads, as "owner/name", and on top of max_models.
-pinned = []
+# Models made to operate a computer from its screen (GUI agents): listed whatever their downloads, so the app
+# can be tried with them.
+pinned = [
+  "mlx-community/ShowUI-2B-6bit-v2",
+  "mlx-community/ShowUI-2B-bf16-4bit",
+  "mlx-community/ShowUI-2B-bf16-8bit",
+  "lethargicgeek/UI-Venus-2-9B-mlx-4bit",
+  "lethargicgeek/UI-Venus-2-9B-mlx-8bit",
+  "clinan/GUI-Owl-1.5-2B-Instruct-MLX-4bit",
+  "mlx-community/UI-Venus-1.5-2B-6bit",
+  "mlx-community/UI-Venus-1.5-8B-4bit",
+  "mlx-community/Fara-7B-4bit",
+]
 
 # Owners whose repositories are never listed.
 exclude_developers = []
