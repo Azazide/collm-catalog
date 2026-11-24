@@ -134,6 +134,7 @@ pinned = [
   "unsloth/DeepSeek-V4-Flash-Vision-Exp-GGUF",
   "unsloth/diffusiongemma-26B-A4B-it-GGUF",
   "unsloth/GLM-5.3-Flash-GGUF",
+  "unsloth/Inkling-2-Mini-GGUF",
   "unsloth/Olmo-3-32B-Think-GGUF",
   "unsloth/Olmo-3-7B-Instruct-GGUF",
   "unsloth/Olmo-3-7B-Think-GGUF",
