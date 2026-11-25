@@ -169,6 +169,11 @@ pub trait Hf {
     fn small_file(&self, id: &str, _rev: &str, path: &str, _limit: u64) -> Result<Option<Vec<u8>>, HfError> {
         Err(HfError(format!("this source has no file {path} of {id}")))
     }
+    /// The first `len` bytes of the file at `url` (a pinned Hugging Face address): the start of a GGUF file, to read its
+    /// metadata keys, never its weights. `None` when there is no such file.
+    fn file_head(&self, url: &str, _len: u64) -> Result<Option<Vec<u8>>, HfError> {
+        Err(HfError(format!("this source cannot read the start of {url}")))
+    }
 }
 
 const API: &str = "https://huggingface.co/api/models";
@@ -239,9 +244,17 @@ impl HttpHf {
     }
 
     fn get(&self, url: &str, limit: u64) -> Result<Reply, HfError> {
+        self.get_range(url, limit, None)
+    }
+
+    /// `range` asks for the start of a file (`bytes=0-262143`); at most `limit` bytes are read either way.
+    fn get_range(&self, url: &str, limit: u64, range: Option<&str>) -> Result<Reply, HfError> {
         let mut last = String::new();
         for attempt in 0..6u32 {
             let mut request = self.agent.get(url);
+            if let Some(range) = range {
+                request = request.header("Range", range);
+            }
             if let Some(token) = &self.token {
                 request = request.header("Authorization", format!("Bearer {token}"));
             }
@@ -363,6 +376,18 @@ impl Hf for HttpHf {
         match reply.status {
             200 if reply.body.len() as u64 > limit => Err(HfError(format!("{url}: larger than {limit} bytes"))),
             200 => Ok(Some(reply.body)),
+            404 => Ok(None),
+            other => Err(HfError(format!("{url}: HTTP {other}"))),
+        }
+    }
+
+    fn file_head(&self, url: &str, len: u64) -> Result<Option<Vec<u8>>, HfError> {
+        if !url.starts_with("https://huggingface.co/") {
+            return Err(HfError(format!("{url}: not a Hugging Face address")));
+        }
+        let reply = self.get_range(url, len, Some(&format!("bytes=0-{}", len.saturating_sub(1))))?;
+        match reply.status {
+            200 | 206 => Ok(Some(reply.body)),
             404 => Ok(None),
             other => Err(HfError(format!("{url}: HTTP {other}"))),
         }

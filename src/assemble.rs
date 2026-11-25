@@ -10,6 +10,7 @@
 use crate::classify::{self, Signals};
 use crate::describe;
 use crate::files;
+use crate::gguf;
 use crate::hf::{Hf, HfError, Repo};
 use crate::model::{Catalog, FORMAT, Model, RULES};
 use crate::select::{self, Curated, Reason};
@@ -242,7 +243,22 @@ fn process(
     };
 
     let tree = hf.tree(&detail.id, &rev)?;
-    let found = files::classify(&detail.id, &rev, &tree);
+    let mut found = files::classify(&detail.id, &rev, &tree);
+    // Files of one repository can differ in a way the summary does not show: an Inkling 2 Mini file of the layout
+    // before the model was reworked is no file the current llama.cpp loads. Their headers are read, nothing more.
+    if architecture.to_ascii_lowercase().starts_with("inkling2") {
+        let mut kept = Vec::new();
+        for quant in found.quants {
+            let old = match hf.file_head(&quant.path, gguf::HEAD_BYTES)? {
+                Some(bytes) => gguf::read_head(&bytes).is_some_and(|head| gguf::is_old_inkling_layout(&head)),
+                None => false,
+            };
+            if !old {
+                kept.push(quant);
+            }
+        }
+        found.quants = kept;
+    }
     if found.quants.is_empty() {
         let reason = if found.drafts.is_empty() {
             Reason::NoWholeFile
