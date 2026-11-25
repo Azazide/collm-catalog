@@ -128,6 +128,8 @@ For GGUF, a repository is listed when:
 - it is not a big-endian build, and at least one whole weights file runs on its own (files cut into `-00001-of-0000N` parts do not count);
 - it is not an embedding, reranker, LoRA, Whisper or VAE repository, or a non-language architecture.
 
+For Inkling 2 Mini, the start of each weights file is read (a few hundred kilobytes, never the weights) and a file of the layout from before the model was reworked is left out: the current llama.cpp does not load it.
+
 Adapters, vocabularies, importance matrices and other small files kept beside the weights are not offered as models.
 
 For MLX, a repository is listed when it is open to everyone, tagged `mlx`, has a chat template, a whole folder (config, tokenizer, every weights part), and an architecture and quantization the engine can load.

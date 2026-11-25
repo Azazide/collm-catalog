@@ -5,6 +5,7 @@ pub mod assemble;
 pub mod classify;
 pub mod describe;
 pub mod files;
+pub mod gguf;
 pub mod hf;
 pub mod mlx;
 pub mod model;

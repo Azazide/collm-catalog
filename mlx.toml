@@ -54,6 +54,17 @@ pinned = [
   "mlx-community/UI-Venus-1.5-2B-6bit",
   "mlx-community/UI-Venus-1.5-8B-4bit",
   "mlx-community/Fara-7B-4bit",
+  # Inkling 2 Mini (type `inkling2_loop`). mlx-swift-lm 3.33.0 cannot load it yet (upstream PR 821, release 3.34.0), so
+  # while `inkling2_loop` is missing from model_types and vision_model_types these are checked and left out. They
+  # appear once it is added there (it is in both: text and images).
+  "mlx-community/Inkling-2-Mini-4bit",
+  "mlx-community/Inkling-2-Mini-oQ4e-mtp",
+  "mlx-community/Inkling-2-Mini-oQ3e-mtp",
+  "mlx-community/Inkling-2-Mini-oQ2.5e-mtp",
+  "ddalcu/Inkling-2-Mini-MLX-8bit",
+  "pipenetwork/Inkling-2-Mini-MLX-8bit",
+  "junafinity/Inkling-2-Mini-Uncensored-MLX-oQ8",
+  "orcarouter/Inkling-2-Mini-abliterated-MLX",
 ]
 
 # Owners whose repositories are never listed.

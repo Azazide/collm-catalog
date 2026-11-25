@@ -33,6 +33,8 @@ struct Fake {
     calls: RefCell<Vec<String>>,
     list_fails_at: Option<usize>,
     tree_fails: HashSet<String>,
+    /// The start of a file, by the end of its address.
+    heads: HashMap<String, Vec<u8>>,
 }
 
 impl Fake {
@@ -129,6 +131,11 @@ impl Hf for Fake {
     fn readme(&self, id: &str, _rev: &str) -> Result<Option<String>, HfError> {
         self.calls.borrow_mut().push(format!("readme:{id}"));
         Ok(self.readmes.get(id).cloned())
+    }
+
+    fn file_head(&self, url: &str, _len: u64) -> Result<Option<Vec<u8>>, HfError> {
+        self.calls.borrow_mut().push(format!("head:{url}"));
+        Ok(self.heads.iter().find(|(name, _)| url.ends_with(name.as_str())).map(|(_, bytes)| bytes.clone()))
     }
 }
 
@@ -1132,4 +1139,59 @@ fn a_byte_swapped_build_for_a_big_endian_machine_is_left_out_and_its_little_endi
     let (catalog, stats, _) = run(&fake, &Curated::default(), &Catalog::empty());
     assert_eq!(names(&catalog), ["t/Model-GGUF"]);
     assert_eq!(stats.rejected.get(&Reason::BigEndian), Some(&1));
+}
+
+/// A GGUF start with `general.architecture` and, when `loops`, an `inkling2.num_loops` key.
+fn gguf_start(architecture: &str, loops: bool) -> Vec<u8> {
+    let string = |s: &str| {
+        let mut v = (s.len() as u64).to_le_bytes().to_vec();
+        v.extend(s.as_bytes());
+        v
+    };
+    let mut out = b"GGUF".to_vec();
+    out.extend(3u32.to_le_bytes());
+    out.extend(0u64.to_le_bytes());
+    out.extend((1 + u64::from(loops)).to_le_bytes());
+    out.extend(string("general.architecture"));
+    out.extend(8u32.to_le_bytes());
+    out.extend(string(architecture));
+    if loops {
+        out.extend(string("inkling2.num_loops"));
+        out.extend(4u32.to_le_bytes());
+        out.extend(3u32.to_le_bytes());
+    }
+    out
+}
+
+#[test]
+fn an_inkling_file_of_the_old_layout_is_left_out_and_a_repository_of_only_those_is_no_model() {
+    let oid = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
+    let file = |name: &str| format!(r#"{{"type":"file","path":"{name}","size":4000000000,"lfs":{{"oid":"{oid}","size":4000000000}}}}"#);
+    let tree = |names: &[&str]| -> Vec<TreeEntry> {
+        serde_json::from_str(&format!("[{}]", names.iter().map(|n| file(n)).collect::<Vec<_>>().join(","))).unwrap()
+    };
+    let template = Some("{% for m in messages %}{{ m }}{% endfor %}");
+    let mut fake = Fake::default();
+    let repos = vec![
+        bare("o/mixed", &[], "inkling2_loop", template),
+        bare("o/old", &[], "inkling2", template),
+        bare("o/other", &[], "llama", template),
+    ];
+    for repo in &repos {
+        fake.details.insert(repo.id.clone(), repo.clone());
+    }
+    fake.trees.insert("o/mixed".into(), tree(&["new-Q6_K.gguf", "old-Q4_K_M.gguf"]));
+    fake.trees.insert("o/old".into(), tree(&["only-Q4_K_M.gguf"]));
+    fake.trees.insert("o/other".into(), tree(&["plain-Q4_K_M.gguf"]));
+    fake.heads.insert("new-Q6_K.gguf".into(), gguf_start("inkling2_loop", false));
+    fake.heads.insert("old-Q4_K_M.gguf".into(), gguf_start("inkling2", true));
+    fake.heads.insert("only-Q4_K_M.gguf".into(), gguf_start("inkling2", true));
+    fake.pages.push(repos);
+    let (catalog, stats, _) = run(&fake, &Curated::default(), &Catalog::empty());
+    let kept: Vec<&str> = find(&catalog, "o/mixed").quants.iter().map(|q| q.model_id.as_str()).collect();
+    assert_eq!(kept, ["new-Q6_K"], "the old-layout file is not offered");
+    assert!(!names(&catalog).contains(&"o/old".to_string()));
+    assert_eq!(stats.rejected.get(&Reason::NoWholeFile), Some(&1));
+    assert!(fake.called("head:").iter().all(|c| !c.contains("plain-Q4_K_M")), "other models are not probed");
+    assert!(names(&catalog).contains(&"o/other".to_string()));
 }
